@@ -1,5 +1,6 @@
 #include <driver/i2s.h>
 #include <opus.h>
+#include <esp_log.h>
 
 #include "main.h"
 
@@ -22,8 +23,8 @@
 #define ADC_DATA_PIN 46   // SD  -- DATA
 #define OPUS_OUT_BUFFER_SIZE 1276  // 1276 bytes is recommended by opus_encode
 
-#define OPUS_ENCODER_BITRATE 30000
-#define OPUS_ENCODER_COMPLEXITY 0
+#define OPUS_ENCODER_BITRATE 32000
+#define OPUS_ENCODER_COMPLEXITY 2
 
 void oai_init_audio_capture() {
   i2s_config_t i2s_config_out = {
@@ -39,7 +40,7 @@ void oai_init_audio_capture() {
       .tx_desc_auto_clear = true,
   };
   if (i2s_driver_install(I2S_NUM_0, &i2s_config_out, 0, NULL) != ESP_OK) {
-    printf("Failed to configure I2S driver for audio output");
+    ESP_LOGE("Media", "Failed to configure I2S driver for audio output");
     return;
   }
 
@@ -51,7 +52,7 @@ void oai_init_audio_capture() {
       .data_in_num = I2S_PIN_NO_CHANGE,
   };
   if (i2s_set_pin(I2S_NUM_0, &pin_config_out) != ESP_OK) {
-    printf("Failed to set I2S pins for audio output");
+    ESP_LOGE("Media", "Failed to set I2S pins for audio output");
     return;
   }
   i2s_zero_dma_buffer(I2S_NUM_0);
@@ -68,7 +69,7 @@ void oai_init_audio_capture() {
       .use_apll = 1,
   };
   if (i2s_driver_install(I2S_NUM_1, &i2s_config_in, 0, NULL) != ESP_OK) {
-    printf("Failed to configure I2S driver for audio input");
+    ESP_LOGE("Media", "Failed to configure I2S driver for audio input");
     return;
   }
 
@@ -80,9 +81,10 @@ void oai_init_audio_capture() {
       .data_in_num = ADC_DATA_PIN,
   };
   if (i2s_set_pin(I2S_NUM_1, &pin_config_in) != ESP_OK) {
-    printf("Failed to set I2S pins for audio input");
+    ESP_LOGE("Media", "Failed to set I2S pins for audio input");
     return;
   }
+  ESP_LOGI("Media","OAI Audio Capture Initialized");
 }
 
 opus_int16 *output_buffer = NULL;
@@ -92,7 +94,7 @@ void oai_init_audio_decoder() {
   int decoder_error = 0;
   opus_decoder = opus_decoder_create(SPK_SAMPLE_RATE, 2, &decoder_error);
   if (decoder_error != OPUS_OK) {
-    printf("Failed to create OPUS decoder");
+    ESP_LOGE("Media", "Failed to create OPUS decoder");
     return;
   }
 
@@ -119,33 +121,57 @@ void oai_init_audio_encoder() {
   opus_encoder = opus_encoder_create(MIC_SAMPLE_RATE, 1, OPUS_APPLICATION_VOIP,
                                      &encoder_error);
   if (encoder_error != OPUS_OK) {
-    printf("Failed to create OPUS encoder");
+    ESP_LOGE("Media", "Failed to create OPUS encoder");
     return;
   }
 
   if (opus_encoder_init(opus_encoder, MIC_SAMPLE_RATE, 1, OPUS_APPLICATION_VOIP) !=
       OPUS_OK) {
-    printf("Failed to initialize OPUS encoder");
+    ESP_LOGE("Media", "Failed to initialize OPUS encoder");
     return;
   }
 
   opus_encoder_ctl(opus_encoder, OPUS_SET_BITRATE(OPUS_ENCODER_BITRATE));
   opus_encoder_ctl(opus_encoder, OPUS_SET_COMPLEXITY(OPUS_ENCODER_COMPLEXITY));
   opus_encoder_ctl(opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
-  encoder_input_buffer = (opus_int16 *)malloc(MIC_BUFFER_SAMPLES);
+  encoder_input_buffer = (opus_int16 *)malloc(MIC_BUFFER_SAMPLES * sizeof(opus_int16));
   encoder_output_buffer = (uint8_t *)malloc(MIC_OPUS_OUT_BUFFER_SIZE);
+  ESP_LOGI("Media","Initialized OPUS encoder");
 }
 
 void oai_send_audio(PeerConnection *peer_connection) {
   size_t bytes_read = 0;
+  static int regulator = 0;
 
-  i2s_read(I2S_NUM_1, encoder_input_buffer, MIC_BUFFER_SAMPLES, &bytes_read,
+  i2s_read(I2S_NUM_1, encoder_input_buffer, MIC_BUFFER_SAMPLES * sizeof(opus_int16), &bytes_read,
            portMAX_DELAY);
+
+  regulator++;
+  if (regulator % 100 == 0) {
+    ESP_LOGI("Media", "Bytes read from mic: %d", bytes_read);
+    // Print first 8 samples for debugging
+    char sample_log[128] = {0};
+    int n = snprintf(sample_log, sizeof(sample_log), "Mic samples: ");
+    for (int i = 0; i < 8 && i < MIC_BUFFER_SAMPLES; ++i) {
+      n += snprintf(sample_log + n, sizeof(sample_log) - n, "%d ", encoder_input_buffer[i]);
+    }
+    ESP_LOGI("Media", "%s", sample_log);
+  }
 
   auto encoded_size =
       opus_encode(opus_encoder, encoder_input_buffer, MIC_BUFFER_SAMPLES / 2,
                   encoder_output_buffer, OPUS_OUT_BUFFER_SIZE);
 
+  if (regulator % 100 == 0) {
+    ESP_LOGI("Media", "Encoded size: %d", (int)encoded_size);
+  }
+
+  if (regulator % 100 == 0) {
+    ESP_LOGI("Media", "Sending audio: encoded_size=%d, first 8 bytes: %02x %02x %02x %02x %02x %02x %02x %02x",
+      (int)encoded_size,
+      encoder_output_buffer[0], encoder_output_buffer[1], encoder_output_buffer[2], encoder_output_buffer[3],
+      encoder_output_buffer[4], encoder_output_buffer[5], encoder_output_buffer[6], encoder_output_buffer[7]);
+  }
   peer_connection_send_audio(peer_connection, encoder_output_buffer,
                              encoded_size);
 }

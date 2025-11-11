@@ -56,9 +56,7 @@ void oai_send_audio_task(void *user_data) {
 
 static void oai_ondatachannel_onmessage_task(char *msg, size_t len,
                                              void *userdata, uint16_t sid) {
-#ifdef LOG_DATACHANNEL_MESSAGES
-  ESP_LOGI(LOG_TAG, "DataChannel Message: %s", msg);
-#endif
+  ESP_LOGI(LOG_TAG, "Received datachannel message: %s", msg);
   parse_response(msg);
 }
 

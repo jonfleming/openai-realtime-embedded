@@ -89,6 +89,7 @@ void oai_http_request(char *offer, char *answer) {
 #else
   snprintf(answer, MAX_HTTP_OUTPUT_BUFFER, "Bearer %s", OPENAI_API_KEY);
 #endif
+  ESP_LOGI(LOG_TAG, "OAI Bearer Token: %s", answer);
 
   esp_http_client_handle_t client = esp_http_client_init(&config);
   esp_http_client_set_method(client, HTTP_METHOD_POST);
