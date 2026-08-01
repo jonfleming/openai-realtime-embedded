@@ -23,7 +23,8 @@ if(IDF_TARGET STREQUAL linux)
     )
 endif()
 
-add_compile_definitions(OPENAI_REALTIMEAPI="https://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview-2024-12-17")
+
+add_compile_definitions(OPENAI_REALTIMEAPI="http://192.168.0.112:8765/v1/realtime")
 
 set(COMPONENTS src)
 set(EXTRA_COMPONENT_DIRS "src" "components/srtp" "components/peer" "components/esp-libopus")

@@ -95,7 +95,9 @@ static void oai_onconnectionstatechange_task(PeerConnectionState state,
 static void oai_on_icecandidate_task(char *description, void *user_data) {
   char local_buffer[MAX_HTTP_OUTPUT_BUFFER + 1] = {0};
   oai_http_request(description, local_buffer);
-  peer_connection_set_remote_description(peer_connection, local_buffer);
+  if (strlen(local_buffer) > 0) {
+    peer_connection_set_remote_description(peer_connection, local_buffer);
+  }
 }
 
 void oai_webrtc() {

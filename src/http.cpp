@@ -78,9 +78,12 @@ void oai_http_request(char *offer, char *answer) {
   esp_http_client_config_t config;
   memset(&config, 0, sizeof(esp_http_client_config_t));
 
-  config.url = OPENAI_REALTIMEAPI;
+  config.url = OPENAI_REALTIMEAPI "/calls";
+   config.timeout_ms = 10000;
   config.event_handler = oai_http_event_handler;
   config.user_data = answer;
+  config.buffer_size = MAX_HTTP_OUTPUT_BUFFER;
+
 
 #ifndef LINUX_BUILD
   wifi_config_data_t nvs_config = {0}; 
@@ -98,11 +101,11 @@ void oai_http_request(char *offer, char *answer) {
   esp_http_client_set_post_field(client, offer, strlen(offer));
 
   esp_err_t err = esp_http_client_perform(client);
-  if (err != ESP_OK || esp_http_client_get_status_code(client) != 201) {
-    ESP_LOGE(LOG_TAG, "Error perform http request %s", esp_err_to_name(err));
-#ifndef LINUX_BUILD
-    esp_restart();
-#endif
+  ESP_LOGI(LOG_TAG, "Made it here URL: %s", config.url);
+  int status_code = esp_http_client_get_status_code(client);
+  if (err != ESP_OK || status_code != 201) {
+    ESP_LOGE(LOG_TAG, "Error perform http request %s, status_code=%d", esp_err_to_name(err), status_code);
+    memset(answer, 0, MAX_HTTP_OUTPUT_BUFFER);
   }
 
   esp_http_client_cleanup(client);

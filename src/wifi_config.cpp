@@ -77,7 +77,7 @@ esp_netif_t* start_wifi_ap(const char *ssid, const char *password) {
     strncpy((char *)ap_config.ap.ssid, ssid, sizeof(ap_config.ap.ssid));
     if(strlen(password)!=0)
     {
-        strncpy((char *)ap_config.ap.password, password, sizeof(ap_config.ap.password));
+        strlcpy((char *)ap_config.ap.password, password, sizeof(ap_config.ap.password));
     }
     esp_wifi_set_config(WIFI_IF_AP, &ap_config);
     esp_wifi_start();
@@ -117,8 +117,8 @@ esp_netif_t* start_wifi_sta(const char *ssid, const char *password) {
     sta_config.sta.failure_retry_cnt = 5;
     sta_config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
 
-    strncpy((char *)sta_config.sta.ssid, ssid, sizeof(sta_config.sta.ssid));
-    strncpy((char *)sta_config.sta.password, password, sizeof(sta_config.sta.password));
+    strlcpy((char *)sta_config.sta.ssid, ssid, sizeof(sta_config.sta.ssid));
+    strlcpy((char *)sta_config.sta.password, password, sizeof(sta_config.sta.password));
     
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &sta_config);
