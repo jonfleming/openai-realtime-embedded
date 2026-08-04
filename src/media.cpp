@@ -119,6 +119,7 @@ void oai_audio_decode(uint8_t *data, size_t size) {
 
 OpusEncoder *opus_encoder = NULL;
 opus_int16 *encoder_input_buffer = NULL;
+opus_int16 *encoder_capture_buffer = NULL;
 uint8_t *encoder_output_buffer = NULL;
 
 void oai_init_audio_encoder() {
@@ -141,8 +142,11 @@ void oai_init_audio_encoder() {
   opus_encoder_ctl(opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
   encoder_input_buffer =
       (opus_int16 *)malloc(MIC_BUFFER_SAMPLES * MIC_CHANNELS * sizeof(opus_int16));
+  encoder_capture_buffer =
+      (opus_int16 *)malloc(MIC_BUFFER_SAMPLES * MIC_CHANNELS * sizeof(opus_int16));
   encoder_output_buffer = (uint8_t *)malloc(MIC_OPUS_OUT_BUFFER_SIZE);
-  if (encoder_input_buffer == NULL || encoder_output_buffer == NULL) {
+  if (encoder_input_buffer == NULL || encoder_capture_buffer == NULL ||
+      encoder_output_buffer == NULL) {
     ESP_LOGE("Media", "Failed to allocate mic encoder buffers");
     return;
   }
@@ -154,7 +158,7 @@ void oai_send_audio(PeerConnection *peer_connection) {
   static int regulator = 0;
 
   i2s_read(I2S_NUM_1,
-           encoder_input_buffer,
+           encoder_capture_buffer,
            MIC_BUFFER_SAMPLES * MIC_CHANNELS * sizeof(opus_int16),
            &bytes_read,
            portMAX_DELAY);
@@ -164,9 +168,30 @@ void oai_send_audio(PeerConnection *peer_connection) {
     return;
   }
 
+  int64_t left_energy = 0;
+  int64_t right_energy = 0;
+  for (int i = 0; i < samples_read; ++i) {
+    int16_t left = encoder_capture_buffer[i * 2];
+    int16_t right = encoder_capture_buffer[i * 2 + 1];
+    left_energy += (int32_t)left * left;
+    right_energy += (int32_t)right * right;
+  }
+
+  bool use_left_channel = left_energy >= right_energy;
+  for (int i = 0; i < samples_read; ++i) {
+    int16_t sample = use_left_channel ? encoder_capture_buffer[i * 2]
+                                      : encoder_capture_buffer[i * 2 + 1];
+    encoder_input_buffer[i * 2] = sample;
+    encoder_input_buffer[i * 2 + 1] = sample;
+  }
+
   regulator++;
   if (regulator % 100 == 0) {
-    ESP_LOGI("Media", "Bytes read from mic: %d", bytes_read);
+    ESP_LOGI("Media", "Bytes read from mic: %d, channel=%s, L=%lld R=%lld",
+             bytes_read,
+             use_left_channel ? "left" : "right",
+             (long long)left_energy,
+             (long long)right_energy);
     // Print first 8 samples for debugging
     char sample_log[128] = {0};
     int n = snprintf(sample_log, sizeof(sample_log), "Mic samples: ");
