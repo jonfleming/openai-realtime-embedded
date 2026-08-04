@@ -54,6 +54,12 @@ static bool audio_task_started = false;
 void oai_send_audio_task(void *user_data) {
   oai_init_audio_encoder();
 
+  // STATE_CHANGED updates pc->state after invoking the callback, so wait here
+  // to avoid racing the transition on task startup.
+  while (peer_connection_get_state(peer_connection) != PEER_CONNECTION_COMPLETED) {
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+
   while (1) {
     oai_send_audio(peer_connection);
   }

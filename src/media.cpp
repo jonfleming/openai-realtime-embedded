@@ -225,7 +225,9 @@ void oai_send_audio(PeerConnection *peer_connection) {
   int send_ret = peer_connection_send_audio(peer_connection, encoder_output_buffer,
                                             encoded_size);
   if (send_ret < 0 && regulator % 100 == 0) {
-    ESP_LOGW("Media", "peer_connection_send_audio failed: %d", send_ret);
+    PeerConnectionState state = peer_connection_get_state(peer_connection);
+    ESP_LOGW("Media", "peer_connection_send_audio failed: %d (state=%s)",
+             send_ret, peer_connection_state_to_string(state));
   }
 
   vTaskDelay(pdMS_TO_TICKS(1));
