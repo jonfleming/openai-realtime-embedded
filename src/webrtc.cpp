@@ -50,6 +50,7 @@ void parse_response(const char* json_str) {
 }
 #ifndef LINUX_BUILD
 StaticTask_t task_buffer;
+static bool audio_task_started = false;
 void oai_send_audio_task(void *user_data) {
   oai_init_audio_encoder();
 
@@ -89,8 +90,9 @@ static void oai_onconnectionstatechange_task(PeerConnectionState state,
 #ifndef LINUX_BUILD
     esp_restart();
 #endif
-  } else if (state == PEER_CONNECTION_CONNECTED) {
+  } else if (state == PEER_CONNECTION_COMPLETED && !audio_task_started) {
 #ifndef LINUX_BUILD
+    audio_task_started = true;
     StackType_t *stack_memory = (StackType_t *)heap_caps_malloc(
       40000 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
     xTaskCreateStaticPinnedToCore(oai_send_audio_task, "audio_publisher", 40000,
