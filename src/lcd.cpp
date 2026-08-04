@@ -16,8 +16,8 @@
 /**********************
  *     Define Pins and Parameters
  **********************/
-#define FREENOVE_DEDIA_KIT_1_14_INCH
-//#define FREENOVE_DEDIA_KIT_3_5_INCH
+//#define FREENOVE_DEDIA_KIT_1_14_INCH
+#define FREENOVE_DEDIA_KIT_3_5_INCH
 
 #define LCD_SPI_HOST SPI3_HOST
 #define DISPLAY_MOSI_PIN GPIO_NUM_21

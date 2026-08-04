@@ -4,12 +4,14 @@
 
 #include "main.h"
 
-#define SPK_SAMPLE_RATE 8000
-#define SPK_BUFFER_SAMPLES 320  // 320
+#define SPK_SAMPLE_RATE 48000
+#define SPK_BUFFER_SAMPLES 960  // 20ms at 48kHz
+#define SPK_CHANNELS 2
 
 #define MIC_OPUS_OUT_BUFFER_SIZE  2552// 1276  // 1276 bytes is recommended by opus_encode
-#define MIC_SAMPLE_RATE 16000
-#define MIC_BUFFER_SAMPLES 640  // 320
+#define MIC_SAMPLE_RATE 48000
+#define MIC_BUFFER_SAMPLES 960  // 20ms at 48kHz
+#define MIC_CHANNELS 2
 
 // speaker
 #define MCLK_PIN -1
@@ -61,7 +63,7 @@ void oai_init_audio_capture() {
       .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
       .sample_rate = MIC_SAMPLE_RATE,
       .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-      .channel_format = I2S_CHANNEL_FMT_ONLY_RIGHT,
+      .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
       .communication_format = I2S_COMM_FORMAT_I2S_MSB,
       .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
       .dma_buf_count = 8,
@@ -92,13 +94,14 @@ OpusDecoder *opus_decoder = NULL;
 
 void oai_init_audio_decoder() {
   int decoder_error = 0;
-  opus_decoder = opus_decoder_create(SPK_SAMPLE_RATE, 2, &decoder_error);
+  opus_decoder = opus_decoder_create(SPK_SAMPLE_RATE, SPK_CHANNELS, &decoder_error);
   if (decoder_error != OPUS_OK) {
     ESP_LOGE("Media", "Failed to create OPUS decoder");
     return;
   }
 
-  output_buffer = (opus_int16 *)malloc(SPK_BUFFER_SAMPLES * sizeof(opus_int16));
+  output_buffer =
+      (opus_int16 *)malloc(SPK_BUFFER_SAMPLES * SPK_CHANNELS * sizeof(opus_int16));
 }
 
 void oai_audio_decode(uint8_t *data, size_t size) {
@@ -107,7 +110,9 @@ void oai_audio_decode(uint8_t *data, size_t size) {
 
   if (decoded_size > 0) {
     size_t bytes_written = 0;
-    i2s_write(I2S_NUM_0, output_buffer, SPK_BUFFER_SAMPLES * sizeof(opus_int16),
+    i2s_write(I2S_NUM_0,
+              output_buffer,
+              decoded_size * SPK_CHANNELS * sizeof(opus_int16),
               &bytes_written, portMAX_DELAY);
   }
 }
@@ -118,24 +123,29 @@ uint8_t *encoder_output_buffer = NULL;
 
 void oai_init_audio_encoder() {
   int encoder_error;
-  opus_encoder = opus_encoder_create(MIC_SAMPLE_RATE, 1, OPUS_APPLICATION_VOIP,
+  opus_encoder = opus_encoder_create(MIC_SAMPLE_RATE, MIC_CHANNELS, OPUS_APPLICATION_VOIP,
                                      &encoder_error);
   if (encoder_error != OPUS_OK) {
     ESP_LOGE("Media", "Failed to create OPUS encoder");
     return;
   }
 
-  if (opus_encoder_init(opus_encoder, MIC_SAMPLE_RATE, 1, OPUS_APPLICATION_VOIP) !=
+  if (opus_encoder_init(opus_encoder, MIC_SAMPLE_RATE, MIC_CHANNELS, OPUS_APPLICATION_VOIP) !=
       OPUS_OK) {
     ESP_LOGE("Media", "Failed to initialize OPUS encoder");
     return;
   }
 
-  opus_encoder_ctl(opus_encoder, OPUS_SET_BITRATE(OPUS_ENCODER_BITRATE));
+  opus_encoder_ctl(opus_encoder, OPUS_SET_BITRATE(64000));
   opus_encoder_ctl(opus_encoder, OPUS_SET_COMPLEXITY(OPUS_ENCODER_COMPLEXITY));
   opus_encoder_ctl(opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
-  encoder_input_buffer = (opus_int16 *)malloc(MIC_BUFFER_SAMPLES * sizeof(opus_int16));
+  encoder_input_buffer =
+      (opus_int16 *)malloc(MIC_BUFFER_SAMPLES * MIC_CHANNELS * sizeof(opus_int16));
   encoder_output_buffer = (uint8_t *)malloc(MIC_OPUS_OUT_BUFFER_SIZE);
+  if (encoder_input_buffer == NULL || encoder_output_buffer == NULL) {
+    ESP_LOGE("Media", "Failed to allocate mic encoder buffers");
+    return;
+  }
   ESP_LOGI("Media","Initialized OPUS encoder");
 }
 
@@ -143,8 +153,16 @@ void oai_send_audio(PeerConnection *peer_connection) {
   size_t bytes_read = 0;
   static int regulator = 0;
 
-  i2s_read(I2S_NUM_1, encoder_input_buffer, MIC_BUFFER_SAMPLES * sizeof(opus_int16), &bytes_read,
+  i2s_read(I2S_NUM_1,
+           encoder_input_buffer,
+           MIC_BUFFER_SAMPLES * MIC_CHANNELS * sizeof(opus_int16),
+           &bytes_read,
            portMAX_DELAY);
+
+  int samples_read = bytes_read / (MIC_CHANNELS * sizeof(opus_int16));
+  if (samples_read <= 0) {
+    return;
+  }
 
   regulator++;
   if (regulator % 100 == 0) {
@@ -152,18 +170,25 @@ void oai_send_audio(PeerConnection *peer_connection) {
     // Print first 8 samples for debugging
     char sample_log[128] = {0};
     int n = snprintf(sample_log, sizeof(sample_log), "Mic samples: ");
-    for (int i = 0; i < 8 && i < MIC_BUFFER_SAMPLES; ++i) {
+    for (int i = 0; i < 8 && i < MIC_BUFFER_SAMPLES * MIC_CHANNELS; ++i) {
       n += snprintf(sample_log + n, sizeof(sample_log) - n, "%d ", encoder_input_buffer[i]);
     }
     ESP_LOGI("Media", "%s", sample_log);
   }
 
   auto encoded_size =
-      opus_encode(opus_encoder, encoder_input_buffer, MIC_BUFFER_SAMPLES / 2,
+      opus_encode(opus_encoder, encoder_input_buffer, samples_read,
                   encoder_output_buffer, OPUS_OUT_BUFFER_SIZE);
 
   if (regulator % 100 == 0) {
     ESP_LOGI("Media", "Encoded size: %d", (int)encoded_size);
+  }
+
+  if (encoded_size <= 0) {
+    if (regulator % 100 == 0) {
+      ESP_LOGW("Media", "opus_encode failed: %d", (int)encoded_size);
+    }
+    return;
   }
 
   if (regulator % 100 == 0) {
@@ -172,6 +197,11 @@ void oai_send_audio(PeerConnection *peer_connection) {
       encoder_output_buffer[0], encoder_output_buffer[1], encoder_output_buffer[2], encoder_output_buffer[3],
       encoder_output_buffer[4], encoder_output_buffer[5], encoder_output_buffer[6], encoder_output_buffer[7]);
   }
-  peer_connection_send_audio(peer_connection, encoder_output_buffer,
-                             encoded_size);
+  int send_ret = peer_connection_send_audio(peer_connection, encoder_output_buffer,
+                                            encoded_size);
+  if (send_ret < 0 && regulator % 100 == 0) {
+    ESP_LOGW("Media", "peer_connection_send_audio failed: %d", send_ret);
+  }
+
+  vTaskDelay(pdMS_TO_TICKS(1));
 }

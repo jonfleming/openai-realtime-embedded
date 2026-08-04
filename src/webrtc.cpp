@@ -21,6 +21,12 @@
   "{\"type\": \"response.create\", \"response\": {\"modalities\": " \
   "[\"audio\", \"text\"], \"instructions\": \"Say 'How can I help?.'\"}}"
 
+#define SESSION_UPDATE                                              \
+  "{\"type\": \"session.update\", \"session\": {"              \
+  "\"type\": \"realtime\", \"audio\": {"                     \
+  "\"input\": {\"turn_detection\": {\"type\": \"server_vad\", " \
+  "\"interrupt_response\": true}}}}}"
+
 PeerConnection *peer_connection = NULL;
 
 void parse_response(const char* json_str) {
@@ -49,7 +55,6 @@ void oai_send_audio_task(void *user_data) {
 
   while (1) {
     oai_send_audio(peer_connection);
-    vTaskDelay(pdMS_TO_TICKS(TICK_INTERVAL));
   }
 }
 #endif
@@ -65,6 +70,8 @@ static void oai_ondatachannel_onopen_task(void *userdata) {
                                          0, 0, (char *)"oai-events",
                                          (char *)"") != -1) {
     ESP_LOGI(LOG_TAG, "DataChannel created");
+    peer_connection_datachannel_send(peer_connection, (char *)SESSION_UPDATE,
+                                     strlen(SESSION_UPDATE));
     peer_connection_datachannel_send(peer_connection, (char *)GREETING,
                                      strlen(GREETING));
   } else {
