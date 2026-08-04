@@ -24,6 +24,7 @@
   "{\"type\": \"session.update\", \"session\": {"              \
   "\"type\": \"realtime\", \"audio\": {"                     \
   "\"input\": {\"turn_detection\": {\"type\": \"server_vad\", " \
+  "\"threshold\": 0.3, "                                      \
   "\"interrupt_response\": true}}}}}"
 
 PeerConnection *peer_connection = NULL;

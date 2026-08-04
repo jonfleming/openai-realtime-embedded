@@ -30,6 +30,7 @@
 
 #define OPUS_ENCODER_BITRATE 32000
 #define OPUS_ENCODER_COMPLEXITY 2
+#define MIC_GAIN 4  // linear gain applied before encode; 4 = +12 dB; increase if VAD still misses speech
 
 static i2s_chan_handle_t s_i2s_tx_chan = NULL;
 static i2s_chan_handle_t s_i2s_rx_chan = NULL;
@@ -218,8 +219,8 @@ void oai_send_audio(PeerConnection *peer_connection) {
   }
   bool use_left = (left_energy >= right_energy);
   for (int i = 0; i < samples_read; ++i) {
-    encoder_input_buffer[i] =
-        (int16_t)((int32_t)stereo32[i * 2 + (use_left ? 0 : 1)] >> 16);
+    int32_t s = (int32_t)((int32_t)stereo32[i * 2 + (use_left ? 0 : 1)] >> 16) * MIC_GAIN;
+    encoder_input_buffer[i] = s > 32767 ? 32767 : (s < -32768 ? -32768 : (int16_t)s);
   }
 
   regulator++;
