@@ -1,5 +1,4 @@
 #ifndef LINUX_BUILD
-#include <driver/i2s.h>
 #include <opus.h>
 #endif
 
@@ -73,17 +72,24 @@ static void oai_ondatachannel_onmessage_task(char *msg, size_t len,
 }
 
 static void oai_ondatachannel_onopen_task(void *userdata) {
+  // SCTP is now associated; create the named channel so the server sees DATA_CHANNEL_OPEN.
   if (peer_connection_create_datachannel(peer_connection, DATA_CHANNEL_RELIABLE,
                                          0, 0, (char *)"oai-events",
-                                         (char *)"") != -1) {
-    ESP_LOGI(LOG_TAG, "DataChannel created");
-    peer_connection_datachannel_send(peer_connection, (char *)SESSION_UPDATE,
-                                     strlen(SESSION_UPDATE));
-    peer_connection_datachannel_send(peer_connection, (char *)GREETING,
-                                     strlen(GREETING));
-  } else {
+                                         (char *)"") == -1) {
     ESP_LOGE(LOG_TAG, "Failed to create DataChannel");
+    return;
   }
+  ESP_LOGI(LOG_TAG, "DataChannel created");
+
+  int session_ret = peer_connection_datachannel_send(peer_connection,
+                                                     (char *)SESSION_UPDATE,
+                                                     strlen(SESSION_UPDATE));
+  ESP_LOGI(LOG_TAG, "SESSION_UPDATE %s (%d bytes)", session_ret >= 0 ? "sent" : "failed", session_ret);
+
+  int greeting_ret = peer_connection_datachannel_send(peer_connection,
+                                                      (char *)GREETING,
+                                                      strlen(GREETING));
+  ESP_LOGI(LOG_TAG, "GREETING %s (%d bytes)", greeting_ret >= 0 ? "sent" : "failed", greeting_ret);
 }
 
 static void oai_onconnectionstatechange_task(PeerConnectionState state,
@@ -96,13 +102,15 @@ static void oai_onconnectionstatechange_task(PeerConnectionState state,
 #ifndef LINUX_BUILD
     esp_restart();
 #endif
-  } else if (state == PEER_CONNECTION_COMPLETED && !audio_task_started) {
+  } else if (state == PEER_CONNECTION_COMPLETED) {
 #ifndef LINUX_BUILD
-    audio_task_started = true;
-    StackType_t *stack_memory = (StackType_t *)heap_caps_malloc(
-      40000 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
-    xTaskCreateStaticPinnedToCore(oai_send_audio_task, "audio_publisher", 40000,
-                                  NULL, 7, stack_memory, &task_buffer, 0);
+    if (!audio_task_started) {
+      audio_task_started = true;
+      StackType_t *stack_memory = (StackType_t *)heap_caps_malloc(
+        40000 * sizeof(StackType_t), MALLOC_CAP_SPIRAM);
+      xTaskCreateStaticPinnedToCore(oai_send_audio_task, "audio_publisher", 40000,
+                                    NULL, 7, stack_memory, &task_buffer, 1);
+    }
 #endif
   }
 }

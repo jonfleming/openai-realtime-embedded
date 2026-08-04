@@ -1,6 +1,8 @@
-#include <driver/i2s.h>
+#include <driver/i2s_std.h>
 #include <opus.h>
 #include <esp_log.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include "main.h"
 
@@ -8,10 +10,11 @@
 #define SPK_BUFFER_SAMPLES 960  // 20ms at 48kHz
 #define SPK_CHANNELS 2
 
-#define MIC_OPUS_OUT_BUFFER_SIZE  2552// 1276  // 1276 bytes is recommended by opus_encode
-#define MIC_SAMPLE_RATE 48000
-#define MIC_BUFFER_SAMPLES 960  // 20ms at 48kHz
-#define MIC_CHANNELS 2
+#define MIC_OPUS_OUT_BUFFER_SIZE 1276
+#define MIC_SAMPLE_RATE 16000
+#define MIC_BUFFER_SAMPLES 320  // 20ms at 16kHz per channel
+#define MIC_I2S_CHANNELS 2     // stereo capture avoids ESP32-S3 mono DMA padding artifact
+#define MIC_CHANNELS 1         // Opus mono encode
 
 // speaker
 #define MCLK_PIN -1
@@ -28,64 +31,93 @@
 #define OPUS_ENCODER_BITRATE 32000
 #define OPUS_ENCODER_COMPLEXITY 2
 
+static i2s_chan_handle_t s_i2s_tx_chan = NULL;
+static i2s_chan_handle_t s_i2s_rx_chan = NULL;
+
 void oai_init_audio_capture() {
-  i2s_config_t i2s_config_out = {
-      .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
-      .sample_rate = SPK_SAMPLE_RATE,
-      .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-      .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-      .communication_format = I2S_COMM_FORMAT_I2S_MSB,
-      .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-      .dma_buf_count = 8,
-      .dma_buf_len = SPK_BUFFER_SAMPLES,
-      .use_apll = 1,
-      .tx_desc_auto_clear = true,
-  };
-  if (i2s_driver_install(I2S_NUM_0, &i2s_config_out, 0, NULL) != ESP_OK) {
-    ESP_LOGE("Media", "Failed to configure I2S driver for audio output");
+  i2s_chan_config_t tx_chan_cfg =
+      I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+  if (i2s_new_channel(&tx_chan_cfg, &s_i2s_tx_chan, NULL) != ESP_OK) {
+    ESP_LOGE("Media", "Failed to create I2S TX channel");
     return;
   }
 
-  i2s_pin_config_t pin_config_out = {
-      .mck_io_num = MCLK_PIN,
-      .bck_io_num = DAC_BCLK_PIN,
-      .ws_io_num = DAC_LRCLK_PIN,
-      .data_out_num = DAC_DATA_PIN,
-      .data_in_num = I2S_PIN_NO_CHANGE,
+  i2s_std_config_t tx_std_cfg = {
+      .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SPK_SAMPLE_RATE),
+      .slot_cfg =
+          I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+      .gpio_cfg = {
+          .mclk = static_cast<gpio_num_t>(MCLK_PIN),
+          .bclk = static_cast<gpio_num_t>(DAC_BCLK_PIN),
+          .ws = static_cast<gpio_num_t>(DAC_LRCLK_PIN),
+          .dout = static_cast<gpio_num_t>(DAC_DATA_PIN),
+          .din = I2S_GPIO_UNUSED,
+          .invert_flags = {
+              .mclk_inv = false,
+              .bclk_inv = false,
+              .ws_inv = false,
+          },
+      },
   };
-  if (i2s_set_pin(I2S_NUM_0, &pin_config_out) != ESP_OK) {
-    ESP_LOGE("Media", "Failed to set I2S pins for audio output");
-    return;
-  }
-  i2s_zero_dma_buffer(I2S_NUM_0);
-
-  i2s_config_t i2s_config_in = {
-      .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
-      .sample_rate = MIC_SAMPLE_RATE,
-      .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-      .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT,
-      .communication_format = I2S_COMM_FORMAT_I2S_MSB,
-      .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-      .dma_buf_count = 8,
-      .dma_buf_len = MIC_BUFFER_SAMPLES,
-      .use_apll = 1,
-  };
-  if (i2s_driver_install(I2S_NUM_1, &i2s_config_in, 0, NULL) != ESP_OK) {
-    ESP_LOGE("Media", "Failed to configure I2S driver for audio input");
+  if (i2s_channel_init_std_mode(s_i2s_tx_chan, &tx_std_cfg) != ESP_OK) {
+    ESP_LOGE("Media", "Failed to initialize I2S TX std mode");
     return;
   }
 
-  i2s_pin_config_t pin_config_in = {
-      .mck_io_num = MCLK_PIN,
-      .bck_io_num = ADC_BCLK_PIN,
-      .ws_io_num = ADC_LRCLK_PIN,
-      .data_out_num = I2S_PIN_NO_CHANGE,
-      .data_in_num = ADC_DATA_PIN,
-  };
-  if (i2s_set_pin(I2S_NUM_1, &pin_config_in) != ESP_OK) {
-    ESP_LOGE("Media", "Failed to set I2S pins for audio input");
+  i2s_chan_config_t rx_chan_cfg =
+      I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
+  if (i2s_new_channel(&rx_chan_cfg, NULL, &s_i2s_rx_chan) != ESP_OK) {
+    ESP_LOGE("Media", "Failed to create I2S RX channel");
     return;
   }
+
+  i2s_std_config_t rx_std_cfg = {
+      // 32-bit slot gives BCLK=1.024 MHz at 16 kHz (mics need ≥1 MHz)
+      .clk_cfg = {
+          .sample_rate_hz = MIC_SAMPLE_RATE,
+          .clk_src = I2S_CLK_SRC_DEFAULT,
+          .mclk_multiple = I2S_MCLK_MULTIPLE_256,
+      },
+      .slot_cfg = {
+          .data_bit_width = I2S_DATA_BIT_WIDTH_16BIT,
+          .slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT,
+          .slot_mode = I2S_SLOT_MODE_STEREO,
+          .slot_mask = I2S_STD_SLOT_BOTH,
+          .ws_width = 32,
+          .ws_pol = false,
+          .bit_shift = true,
+          .left_align = true,
+          .big_endian = false,
+          .bit_order_lsb = false,
+      },
+      .gpio_cfg = {
+          .mclk = static_cast<gpio_num_t>(MCLK_PIN),
+          .bclk = static_cast<gpio_num_t>(ADC_BCLK_PIN),
+          .ws = static_cast<gpio_num_t>(ADC_LRCLK_PIN),
+          .dout = I2S_GPIO_UNUSED,
+          .din = static_cast<gpio_num_t>(ADC_DATA_PIN),
+          .invert_flags = {
+              .mclk_inv = false,
+              .bclk_inv = false,
+              .ws_inv = false,
+          },
+      },
+  };
+  if (i2s_channel_init_std_mode(s_i2s_rx_chan, &rx_std_cfg) != ESP_OK) {
+    ESP_LOGE("Media", "Failed to initialize I2S RX std mode");
+    return;
+  }
+
+  if (i2s_channel_enable(s_i2s_tx_chan) != ESP_OK) {
+    ESP_LOGE("Media", "Failed to enable I2S TX channel");
+    return;
+  }
+
+  if (i2s_channel_enable(s_i2s_rx_chan) != ESP_OK) {
+    ESP_LOGE("Media", "Failed to enable I2S RX channel");
+    return;
+  }
+
   ESP_LOGI("Media","OAI Audio Capture Initialized");
 }
 
@@ -110,10 +142,13 @@ void oai_audio_decode(uint8_t *data, size_t size) {
 
   if (decoded_size > 0) {
     size_t bytes_written = 0;
-    i2s_write(I2S_NUM_0,
-              output_buffer,
-              decoded_size * SPK_CHANNELS * sizeof(opus_int16),
-              &bytes_written, portMAX_DELAY);
+    if (s_i2s_tx_chan != NULL) {
+      i2s_channel_write(s_i2s_tx_chan,
+                        output_buffer,
+                        decoded_size * SPK_CHANNELS * sizeof(opus_int16),
+                        &bytes_written,
+                        portMAX_DELAY);
+    }
   }
 }
 
@@ -137,13 +172,13 @@ void oai_init_audio_encoder() {
     return;
   }
 
-  opus_encoder_ctl(opus_encoder, OPUS_SET_BITRATE(64000));
+  opus_encoder_ctl(opus_encoder, OPUS_SET_BITRATE(32000));
   opus_encoder_ctl(opus_encoder, OPUS_SET_COMPLEXITY(OPUS_ENCODER_COMPLEXITY));
   opus_encoder_ctl(opus_encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
   encoder_input_buffer =
-      (opus_int16 *)malloc(MIC_BUFFER_SAMPLES * MIC_CHANNELS * sizeof(opus_int16));
+      (opus_int16 *)malloc(MIC_BUFFER_SAMPLES * sizeof(opus_int16));
   encoder_capture_buffer =
-      (opus_int16 *)malloc(MIC_BUFFER_SAMPLES * MIC_CHANNELS * sizeof(opus_int16));
+      (opus_int16 *)malloc(MIC_BUFFER_SAMPLES * MIC_I2S_CHANNELS * 4);  // 32-bit per slot = 4 bytes each
   encoder_output_buffer = (uint8_t *)malloc(MIC_OPUS_OUT_BUFFER_SIZE);
   if (encoder_input_buffer == NULL || encoder_capture_buffer == NULL ||
       encoder_output_buffer == NULL) {
@@ -157,47 +192,45 @@ void oai_send_audio(PeerConnection *peer_connection) {
   size_t bytes_read = 0;
   static int regulator = 0;
 
-  i2s_read(I2S_NUM_1,
-           encoder_capture_buffer,
-           MIC_BUFFER_SAMPLES * MIC_CHANNELS * sizeof(opus_int16),
-           &bytes_read,
-           portMAX_DELAY);
+  if (s_i2s_rx_chan == NULL) {
+    return;
+  }
 
-  int samples_read = bytes_read / (MIC_CHANNELS * sizeof(opus_int16));
+  i2s_channel_read(s_i2s_rx_chan,
+                   encoder_capture_buffer,
+                   MIC_BUFFER_SAMPLES * MIC_I2S_CHANNELS * 4,
+                   &bytes_read,
+                   portMAX_DELAY);
+
+  int samples_read = (int)(bytes_read / (MIC_I2S_CHANNELS * 4));
   if (samples_read <= 0) {
     return;
   }
 
-  int64_t left_energy = 0;
-  int64_t right_energy = 0;
+  // Audio data is in the upper 16 bits of each 32-bit I2S slot (left-aligned per I2S standard)
+  int32_t* stereo32 = (int32_t*)(void*)encoder_capture_buffer;
+  int64_t left_energy = 0, right_energy = 0;
   for (int i = 0; i < samples_read; ++i) {
-    int16_t left = encoder_capture_buffer[i * 2];
-    int16_t right = encoder_capture_buffer[i * 2 + 1];
-    left_energy += (int32_t)left * left;
-    right_energy += (int32_t)right * right;
+    int16_t l = (int16_t)((int32_t)stereo32[i * 2]     >> 16);
+    int16_t r = (int16_t)((int32_t)stereo32[i * 2 + 1] >> 16);
+    left_energy  += (int32_t)l * l;
+    right_energy += (int32_t)r * r;
   }
-
-  bool use_left_channel = left_energy >= right_energy;
+  bool use_left = (left_energy >= right_energy);
   for (int i = 0; i < samples_read; ++i) {
-    int16_t sample = use_left_channel ? encoder_capture_buffer[i * 2]
-                                      : encoder_capture_buffer[i * 2 + 1];
-    encoder_input_buffer[i * 2] = sample;
-    encoder_input_buffer[i * 2 + 1] = sample;
+    encoder_input_buffer[i] =
+        (int16_t)((int32_t)stereo32[i * 2 + (use_left ? 0 : 1)] >> 16);
   }
 
   regulator++;
   if (regulator % 100 == 0) {
-    ESP_LOGI("Media", "Bytes read from mic: %d, channel=%s, L=%lld R=%lld",
-             bytes_read,
-             use_left_channel ? "left" : "right",
-             (long long)left_energy,
-             (long long)right_energy);
-    // Print first 8 samples for debugging
+    ESP_LOGI("Media", "Bytes read: %d, ch=%s, L=%lld R=%lld",
+             bytes_read, use_left ? "L" : "R",
+             (long long)left_energy, (long long)right_energy);
     char sample_log[128] = {0};
     int n = snprintf(sample_log, sizeof(sample_log), "Mic samples: ");
-    for (int i = 0; i < 8 && i < MIC_BUFFER_SAMPLES * MIC_CHANNELS; ++i) {
+    for (int i = 0; i < 8 && i < samples_read; ++i)
       n += snprintf(sample_log + n, sizeof(sample_log) - n, "%d ", encoder_input_buffer[i]);
-    }
     ESP_LOGI("Media", "%s", sample_log);
   }
 
