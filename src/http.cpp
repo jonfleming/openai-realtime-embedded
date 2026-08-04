@@ -102,6 +102,7 @@ void oai_http_request(char *offer, char *answer) {
 
   esp_err_t err = esp_http_client_perform(client);
   ESP_LOGI(LOG_TAG, "Made it here URL: %s", config.url);
+  ESP_LOGI(LOG_TAG, "Answer: %s", answer);
   int status_code = esp_http_client_get_status_code(client);
   if (err != ESP_OK || status_code != 201) {
     ESP_LOGE(LOG_TAG, "Error perform http request %s, status_code=%d", esp_err_to_name(err), status_code);
