@@ -35,6 +35,14 @@
 static i2s_chan_handle_t s_i2s_tx_chan = NULL;
 static i2s_chan_handle_t s_i2s_rx_chan = NULL;
 
+#if defined(I2S_CLK_SRC_APLL)
+static constexpr i2s_clock_src_t MIC_CLK_SRC = I2S_CLK_SRC_APLL;
+static constexpr const char* MIC_CLK_SRC_NAME = "APLL";
+#else
+static constexpr i2s_clock_src_t MIC_CLK_SRC = I2S_CLK_SRC_DEFAULT;
+static constexpr const char* MIC_CLK_SRC_NAME = "DEFAULT";
+#endif
+
 void oai_init_audio_capture() {
   i2s_chan_config_t tx_chan_cfg =
       I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
@@ -76,7 +84,8 @@ void oai_init_audio_capture() {
       // 32-bit slot gives BCLK=1.024 MHz at 16 kHz (mics need ≥1 MHz)
       .clk_cfg = {
           .sample_rate_hz = MIC_SAMPLE_RATE,
-          .clk_src = I2S_CLK_SRC_DEFAULT,
+          // Prefer APLL for an exact 16 kHz clock when this SDK exposes it.
+          .clk_src = MIC_CLK_SRC,
           .mclk_multiple = I2S_MCLK_MULTIPLE_256,
       },
       .slot_cfg = {
@@ -119,6 +128,12 @@ void oai_init_audio_capture() {
     return;
   }
 
+  ESP_LOGI("Media", "Mic clock source=%s, sample_rate=%d, slot_bits=%d, channels=%d, expected_BCLK=%d Hz",
+           MIC_CLK_SRC_NAME,
+           MIC_SAMPLE_RATE,
+           32,
+           MIC_I2S_CHANNELS,
+           MIC_SAMPLE_RATE * MIC_I2S_CHANNELS * 32);
   ESP_LOGI("Media","OAI Audio Capture Initialized");
 }
 
@@ -251,10 +266,13 @@ void oai_send_audio(PeerConnection *peer_connection) {
   }
 
   if (regulator % 100 == 0) {
+    int opus_samples_48k = opus_packet_get_nb_samples(encoder_output_buffer, encoded_size, 48000);
+    int opus_ms = opus_samples_48k > 0 ? (opus_samples_48k * 1000 / 48000) : -1;
     ESP_LOGI("Media", "Sending audio: encoded_size=%d, first 8 bytes: %02x %02x %02x %02x %02x %02x %02x %02x",
       (int)encoded_size,
       encoder_output_buffer[0], encoder_output_buffer[1], encoder_output_buffer[2], encoder_output_buffer[3],
       encoder_output_buffer[4], encoder_output_buffer[5], encoder_output_buffer[6], encoder_output_buffer[7]);
+    ESP_LOGI("Media", "Opus packet duration (RTP/48k): samples=%d (~%d ms)", opus_samples_48k, opus_ms);
   }
   int send_ret = peer_connection_send_audio(peer_connection, encoder_output_buffer,
                                             encoded_size);
