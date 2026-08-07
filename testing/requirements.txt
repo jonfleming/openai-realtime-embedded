@@ -1,0 +1,6 @@
+faster-whisper>=0.10.0
+jiwer
+numpy
+scipy
+soundfile
+matplotlib

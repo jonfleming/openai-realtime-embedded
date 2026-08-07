@@ -24,7 +24,7 @@ if(IDF_TARGET STREQUAL linux)
 endif()
 
 
-add_compile_definitions(OPENAI_REALTIMEAPI="http://192.168.0.112:8765/v1/realtime")
+add_compile_definitions(OPENAI_REALTIMEAPI="https://speech.techion.net/v1/realtime")
 
 set(COMPONENTS src)
 set(EXTRA_COMPONENT_DIRS "src" "components/srtp" "components/peer" "components/esp-libopus")

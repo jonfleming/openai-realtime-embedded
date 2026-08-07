@@ -2,6 +2,16 @@
 
 This fork is specifically customized for Freenove Media Kit and can be directly used on it.
 
+## Maintainer Notes
+
+For contributor and agent guidance, see [AGENTS.md](AGENTS.md).
+
+It captures the non-obvious integration details and regression guardrails for:
+- Freenove Media Kit audio pipeline
+- libpeer / WebRTC signaling and data channel lifecycle
+- Opus encoding/decoding assumptions
+- speech-to-speech interoperability settings
+
 ## Platform/Device Support
 
 * [Freenove ESP32-S3-WROOM](https://www.amazon.com/gp/product/B0BMQ8F7FN)

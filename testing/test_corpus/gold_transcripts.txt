@@ -1,0 +1,23 @@
+# Gold Transcription Test Corpus
+# Format: utterance_ID|transcription
+
+utt_001|hello world this is a test of the speech recognition system
+utt_002|can you hear me clearly now
+utt_003|the quick brown fox jumps over the lazy dog
+utt_004|one two three four five six seven eight nine ten
+utt_005|testing microphone gain and signal quality settings
+utt_006|speech to speech conversion is working properly here
+utt_007|the ESP32 S3 microcontroller records audio via I2S interface
+utt_008|faster whisper large v three processes the transcription
+utt_009|audio sample rate should be sixteen thousand hertz mono
+utt_010|sixteen bit pulse code modulation provides good quality
+utt_011|the microphone sensitivity needs to be adjusted for optimal signal
+utt_012|avoid clipping by reducing gain when speaking loudly
+utt_013|check the RMS level is around minus six decibels
+utt_014|spectral analysis shows energy in the three hundred to eight thousand hertz range
+utt_015|signal to noise ratio should be at least twenty decibels for good ASR performance
+utt_016|recordings should have minimal background noise and interference
+utt_017|the voice activity detection should trigger on speech onset
+utt_018|silence periods before and after each utterance help with segmentation
+utt_019|this test corpus provides repeatable metrics for ESP32 audio tuning
+utt_020|each configuration change should be logged with its WER score
