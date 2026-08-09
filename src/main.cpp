@@ -18,6 +18,7 @@
 // AIPI-Lite hardware initialization
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
 #include "aipi_lite_config.h"
+#include "es8311.h"
 #endif
 
 static const char *TAG = "Main";
@@ -51,6 +52,14 @@ extern "C" void app_main(void) {
 
   peer_init();
   oai_init_audio_capture();
+
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+  // Configure the ES8311 codec over I2C for the shared 16 kHz I2S bus.
+  if (es8311_init() != ESP_OK) {
+    ESP_LOGE(TAG, "ES8311 codec init failed - audio will not work");
+  }
+#endif
+
   oai_init_audio_decoder();
 
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD

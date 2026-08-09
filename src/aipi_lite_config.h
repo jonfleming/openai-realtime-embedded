@@ -53,7 +53,9 @@ extern "C" {
 // ==================== BATTERY MONITORING ====================
 #define BATTERY_MONITOR_PIN     2    // ADC input with 12dB attenuation, multiply by 2.0
 
-// ==================== AUDIO SETTINGS (shared with Freenove) ====================
+// ==================== AUDIO SETTINGS ====================
+// AIPI-Lite audio runs at 16 kHz (mirrors the working Arduino sketch /
+// stock firmware for this board; ES8311 clocked with MCLK 256 * fs).
 #define MIC_SAMPLE_RATE         16000
 #define MIC_I2S_CHANNELS        2    // stereo capture
 #define MIC_CHANNELS            1    // Opus mono encode

@@ -31,7 +31,7 @@ Set `AIPI_LITE_BOARD` in `CMakeLists.txt`:
 ### I²S Pinout Layout
 | Feature | Freenove Media Kit | AIPI-Lite |
 |---------|-------------------|-----------|
-| MCLK | N/A (uses ES8311 standard) | N/A (uses ES8311 standard) |
+| MCLK | N/A (direct MEMS mic) | 6 (ES8311, 256 × fs) |
 | BCLK | 42 | 14 |
 | LRCLK | 41 | 12 |
 | DIN (mic) | 46 | 13 |
@@ -43,7 +43,19 @@ Set `AIPI_LITE_BOARD` in `CMakeLists.txt`:
 - **Display SPI**: Different pins due to different board layout
 - **Buttons**: Left button on GPIO1 (AIPI-Lite) vs GPIO19 (Freenove); Right button on GPIO42
 
-## Critical Invariants (Do Not Break)
+## AIPI-Lite Audio (ES8311 codec)
+
+The AIPI-Lite has one ES8311 codec with ADCLRC/DACLRC tied, so TX and RX must run at the SAME sample rate on ONE shared I2S bus. The AIPI path in `src/media.cpp` mirrors the working Arduino sketch / stock firmware for this exact board:
+
+- Single full-duplex I2S controller (`I2S_NUM_0`), master, **16 kHz** both directions.
+- 16-bit data in **32-bit slots** (BCLK = 64 × fs = 1.024 MHz, MCLK/BCLK = 4), MCLK = GPIO6 at 256 × fs (4.096 MHz).
+- Mic captured at 16 kHz, extracted from the upper 16 bits of each 32-bit slot (L+R summed, ×12 gain, mirroring the sketch's `convert_input_to_backend_pcm`), encoded as Opus mono 16 kHz, 320 samples/frame (20 ms) — the RTP timestamp still advances 960/20 ms (48 kHz clock), matching `opus/48000` negotiation.
+- Speaker plays decoded 16 kHz audio left-aligned (`<< 16`) into the same 32-bit slots.
+- The ES8311 is configured over I2C (SDA=5, SCL=4, addr 0x18) by `src/es8311.c`, using the exact ESPHome/Arduino register sequence proven on this board (CLK1=0x3F, CLK2=0x08, CLK3=0x10, CLK4=0x20, CLK6=0x03, SDP 0x0C, REG17=0xC8, REG37=0x08, REG31=0x00). Speaker amp enable is GPIO9, driven high.
+
+Critical: `src/es8311.c` must leave ES8311 register 0x00 (RESET) at **0x80 (power-on)** as the LAST write (0x1F → 0x00 → config → 0x80). An init that ends at 0x00 powers the codec down: I2C still ACKs and registers still read back, but both the ADC (all-zero mic) and DAC (silent speaker) are dead. Do NOT add register writes beyond the reference sequence — e.g. REG37 must be 0x08 (not 0x48) and REG16 (mic gain) must stay 0x00.
+
+Do NOT run the mic at a different rate than the speaker on AIPI-Lite: the shared LRCK makes that impossible. Do NOT change the I2S slot width on AIPI: the codec's `bclk_div=4` expects BCLK = 64 × fs (32-bit slots); 16-bit slots would clock the codec wrong.
 
 1. Mic capture must use 32-bit I2S slots at 16 kHz.
 - In `src/media.cpp`, RX config uses:

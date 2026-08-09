@@ -212,20 +212,20 @@ void set_backlight_brightness(int brightness)
 }
 
 void reset_lcd(void) {
-    // Configure pin as output mode and set default level to low
-    gpio_config_t io_20_conf = {};
-    io_20_conf.intr_type = GPIO_INTR_DISABLE;
-    io_20_conf.mode = GPIO_MODE_OUTPUT;
-    io_20_conf.pin_bit_mask = (1ULL << LCD_RST_PIN);
-    io_20_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_20_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-    gpio_config(&io_20_conf);
+    // Pulse the panel reset line, then leave it driven HIGH.
+    // (Driving high keeps the panel out of reset; the previous open-drain
+    //  config left RST floating, which can hold ST7735 panels in reset.)
+    gpio_config_t rst_conf = {};
+    rst_conf.intr_type = GPIO_INTR_DISABLE;
+    rst_conf.mode = GPIO_MODE_OUTPUT;
+    rst_conf.pin_bit_mask = (1ULL << LCD_RST_PIN);
+    rst_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    rst_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    gpio_config(&rst_conf);
     gpio_set_level(LCD_RST_PIN, 0); // Set pin to low level
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(20));
     gpio_set_level(LCD_RST_PIN, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    io_20_conf.mode = GPIO_MODE_INPUT_OUTPUT_OD;
-    gpio_config(&io_20_conf);
+    vTaskDelay(pdMS_TO_TICKS(20));
 }
 
 esp_err_t init_lvgl(void)
@@ -290,6 +290,7 @@ esp_err_t init_lvgl(void)
         ESP_LOGE(TAG, "esp_lcd_panel_init failed: %s", esp_err_to_name(err));
         return err;
     }
+    ESP_LOGI(TAG, "Panel init OK");
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR));  // Color inversion
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY));       // Display rotation 
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y)); // Mirror
