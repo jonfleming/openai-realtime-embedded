@@ -10,10 +10,11 @@ extern "C" {
 
 #include "lvgl.h"
 #include "esp_lvgl_port.h"
+#include "esp_err.h"
 
 extern lv_disp_t * disp_handle;
 
-void init_lvgl(void);
+esp_err_t init_lvgl(void);
 void lvgl_ui(void);
 void lvgl_ui_label_set_text(const char *text);
 

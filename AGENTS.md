@@ -6,17 +6,42 @@ This file captures the non-obvious implementation details that made the Freenove
 
 ## Project Snapshot
 
-- Platform target: ESP32-S3 (Freenove Media Kit)
+- Platform target: ESP32-S3 (Freenove Media Kit or AIPI-Lite)
 - Transport: WebRTC (libpeer)
 - Audio codec: Opus
 - Signaling: HTTP SDP offer/answer
 - Realtime endpoint: compile-time `OPENAI_REALTIMEAPI` in `CMakeLists.txt`
+- Build configuration: `AIPI_LITE_BOARD=1` for AIPI-Lite, default for Freenove
 - Key app files:
   - `src/media.cpp`
   - `src/webrtc.cpp`
   - `src/http.cpp`
+  - `src/aipi_lite_config.h/c`
   - `components/peer/CMakeLists.txt`
   - `deps/libpeer/src/config.h`
+
+## Board Selection
+
+Set `AIPI_LITE_BOARD` in `CMakeLists.txt`:
+- `AIPI_LITE_BOARD=1`: AIPI-Lite (stripped-down, cheaper variant)
+- `AIPI_LITE_BOARD=0` or undefined: Freenove Media Kit (full-featured)
+
+## Hardware Differences
+
+### I²S Pinout Layout
+| Feature | Freenove Media Kit | AIPI-Lite |
+|---------|-------------------|-----------|
+| MCLK | N/A (uses ES8311 standard) | N/A (uses ES8311 standard) |
+| BCLK | 42 | 14 |
+| LRCLK | 41 | 12 |
+| DIN (mic) | 46 | 13 |
+| DOUT (speaker) | 1 | 11 |
+
+### Key Differences
+- **Power management**: AIPI-Lite has `POWER_KEEP_ALIVE_PIN=10` that must be HIGH to prevent battery cutoff
+- **Backlight PWM**: Freenove uses GPIO2; AIPI-Lite uses GPIO3 (strapping pin, works but shows warning)
+- **Display SPI**: Different pins due to different board layout
+- **Buttons**: Left button on GPIO1 (AIPI-Lite) vs GPIO19 (Freenove); Right button on GPIO42
 
 ## Critical Invariants (Do Not Break)
 

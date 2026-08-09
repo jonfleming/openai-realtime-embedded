@@ -5,6 +5,9 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+#include "esp_lcd_st7735.h"
+#endif
 #include <esp_log.h>
 
 #include "lcd.h"
@@ -17,47 +20,54 @@
  *     Define Pins and Parameters
  **********************/
 //#define FREENOVE_DEDIA_KIT_1_14_INCH
-#define FREENOVE_DEDIA_KIT_3_5_INCH
 
-#define LCD_SPI_HOST SPI3_HOST
-#define DISPLAY_MOSI_PIN GPIO_NUM_21
-#define DISPLAY_CLK_PIN GPIO_NUM_47
-#define DISPLAY_DC_PIN GPIO_NUM_45
-#define DISPLAY_RST_PIN GPIO_NUM_20
-#define DISPLAY_CS_PIN GPIO_NUM_NC
+// Board-specific pin definitions (AIPI-Lite vs Freenove)
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+   #define LCD_SPI_HOST SPI3_HOST
+   #define DISPLAY_MOSI_PIN GPIO_NUM_17
+   #define DISPLAY_CLK_PIN GPIO_NUM_16
+   #define DISPLAY_DC_PIN GPIO_NUM_7
+   #define DISPLAY_RST_PIN GPIO_NUM_18
+   #define DISPLAY_CS_PIN GPIO_NUM_15
+   #define LCD_RST_PIN GPIO_NUM_18
+   #define DISPLAY_BACKLIGHT_PIN GPIO_NUM_3
+   #define DISPLAY_PCLK_HZ (27 * 1000 * 1000)
+   #define DISPLAY_WIDTH 128
+   #define DISPLAY_HEIGHT 128
+   #define DISPLAY_MIRROR_X false
+   #define DISPLAY_MIRROR_Y false
+   #define DISPLAY_SWAP_XY false
+   #define DISPLAY_INVERT_COLOR true
+   #define DISPLAY_RGB_ORDER LCD_RGB_ELEMENT_ORDER_BGR
+   #define DISPLAY_OFFSET_X 0
+   #define DISPLAY_OFFSET_Y 0
+#else
+   // Freenove Media Kit (3.5 inch)
+   #define FREENOVE_DEDIA_KIT_3_5_INCH
+   #define LCD_SPI_HOST SPI3_HOST
+   #define DISPLAY_MOSI_PIN GPIO_NUM_21
+   #define DISPLAY_CLK_PIN GPIO_NUM_47
+   #define DISPLAY_DC_PIN GPIO_NUM_45
+   #define DISPLAY_RST_PIN GPIO_NUM_20
+   #define DISPLAY_CS_PIN GPIO_NUM_NC
+   #define LCD_RST_PIN GPIO_NUM_20
+   #define DISPLAY_BACKLIGHT_PIN GPIO_NUM_2
+   #define DISPLAY_PCLK_HZ (80 * 1000 * 1000)
+   #define DISPLAY_WIDTH 480
+   #define DISPLAY_HEIGHT 320
+   #define DISPLAY_MIRROR_X false
+   #define DISPLAY_MIRROR_Y false
+   #define DISPLAY_SWAP_XY true
+   #define DISPLAY_INVERT_COLOR true
+   #define DISPLAY_RGB_ORDER LCD_RGB_ELEMENT_ORDER_RGB
+   #define DISPLAY_OFFSET_X 0
+   #define DISPLAY_OFFSET_Y 0
+#endif
 
-#define LCD_RST_PIN GPIO_NUM_20
-#define DISPLAY_BACKLIGHT_PIN GPIO_NUM_2
 #define BACKLIGHT_PWM_TIMER LEDC_TIMER_0
 #define BACKLIGHT_PWM_CHANNEL LEDC_CHANNEL_0
 #define BACKLIGHT_PWM_FREQ 1000                // PWM frequency: 5kHz
 #define BACKLIGHT_RESOLUTION LEDC_TIMER_13_BIT // 13-bit resolution (0 ~ 8191)
-
-// Screen resolution and offset
-#ifdef FREENOVE_DEDIA_KIT_1_14_INCH
-#define DISPLAY_WIDTH 240
-#define DISPLAY_HEIGHT 135
-#define DISPLAY_MIRROR_X true
-#define DISPLAY_MIRROR_Y false
-#define DISPLAY_SWAP_XY true
-#define DISPLAY_INVERT_COLOR true
-#define DISPLAY_RGB_ORDER LCD_RGB_ELEMENT_ORDER_RGB
-#define DISPLAY_OFFSET_X 40
-#define DISPLAY_OFFSET_Y 53
-
-#elif defined FREENOVE_DEDIA_KIT_3_5_INCH
-#define LCD_TYPE_ST7789_SERIAL
-#define DISPLAY_WIDTH 480
-#define DISPLAY_HEIGHT 320
-#define DISPLAY_MIRROR_X false
-#define DISPLAY_MIRROR_Y false
-#define DISPLAY_SWAP_XY true
-#define DISPLAY_INVERT_COLOR true
-#define DISPLAY_RGB_ORDER LCD_RGB_ELEMENT_ORDER_RGB
-#define DISPLAY_OFFSET_X 0
-#define DISPLAY_OFFSET_Y 0
-
-#endif
 
 esp_lcd_panel_handle_t panel = NULL;
 lv_disp_t * disp_handle;
@@ -70,11 +80,11 @@ typedef struct {
 
 lvgl_screen_t lvgl_screen;
 
-#ifdef FREENOVE_DEDIA_KIT_3_5_INCH
+#if defined(FREENOVE_DEDIA_KIT_3_5_INCH) && !(defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD)
 typedef struct {
-    int cmd;              
-    const void *data;      
-    size_t data_bytes;    
+    int cmd;             
+    const void *data;     
+    size_t data_bytes;   
     unsigned int delay_ms;  
 } st7796_lcd_init_cmd_t;
 
@@ -104,6 +114,51 @@ st7796_lcd_init_cmd_t st7796_lcd_init_cmds[] = {
 };
 #endif
 
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+static esp_err_t create_aipi_panel(esp_lcd_panel_io_handle_t io_handle,
+                                   esp_lcd_panel_dev_config_t *panel_config)
+{
+    ESP_LOGI(TAG, "LVGL init: create AIPI panel");
+
+    st7735_vendor_config_t aipi_vendor_config = {
+        .init_cmds = NULL,
+        .init_cmds_size = 0,
+    };
+
+    panel_config->vendor_config = &aipi_vendor_config;
+
+    esp_err_t err = esp_lcd_new_panel_st7735(io_handle, panel_config, &panel);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_lcd_new_panel_st7735 failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "LVGL init: create AIPI panel OK");
+    return ESP_OK;
+}
+#else
+static esp_err_t create_freenove_panel(esp_lcd_panel_io_handle_t io_handle,
+                                       esp_lcd_panel_dev_config_t *panel_config)
+{
+    st7796_vendor_config_t st7796_vendor_config = {
+        .init_cmds = st7796_lcd_init_cmds,
+        .init_cmds_size = sizeof(st7796_lcd_init_cmds) / sizeof(st7796_lcd_init_cmd_t),
+    };
+
+    panel_config->vendor_config = &st7796_vendor_config;
+
+    ESP_LOGI(TAG, "LVGL init: create Freenove panel");
+    esp_err_t err = esp_lcd_new_panel_st7789(io_handle, panel_config, &panel);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_lcd_new_panel_st7789 failed: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "LVGL init: create Freenove panel OK");
+    return ESP_OK;
+}
+#endif
+
 /**********************
  * @brief Initialize backlight PWM control
  **********************/
@@ -127,7 +182,12 @@ void backlight_init(void)
         .timer_sel = BACKLIGHT_PWM_TIMER,
         .duty = 0,
         .hpoint = 0,
+    #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+        // GPIO3 is a strapping pin on AIPI-Lite; don't require sleep keep-alive there.
+        .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD,
+    #else
         .sleep_mode = LEDC_SLEEP_MODE_KEEP_ALIVE,
+    #endif
         .flags = {.output_invert = false}
     };
     ledc_channel_config(&channel);
@@ -168,13 +228,15 @@ void reset_lcd(void) {
     gpio_config(&io_20_conf);
 }
 
-void init_lvgl(void)
+esp_err_t init_lvgl(void)
 {
-    ESP_LOGD(TAG, "Install BL IO");
+    esp_err_t err;
+
+    ESP_LOGI(TAG, "LVGL init: backlight");
     backlight_init();
     set_backlight_brightness(100);
 
-    ESP_LOGD(TAG, "Install Spi IO");
+    ESP_LOGI(TAG, "LVGL init: SPI bus");
     spi_bus_config_t spi_bus_io = {};
     spi_bus_io.mosi_io_num = DISPLAY_MOSI_PIN;
     spi_bus_io.miso_io_num = GPIO_NUM_NC;
@@ -182,50 +244,60 @@ void init_lvgl(void)
     spi_bus_io.quadwp_io_num = GPIO_NUM_NC;
     spi_bus_io.quadhd_io_num = GPIO_NUM_NC;
     spi_bus_io.max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * sizeof(uint16_t);
-    ESP_ERROR_CHECK(spi_bus_initialize(LCD_SPI_HOST, &spi_bus_io, SPI_DMA_CH_AUTO));
+    err = spi_bus_initialize(LCD_SPI_HOST, &spi_bus_io, SPI_DMA_CH_AUTO);
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+        ESP_LOGE(TAG, "spi_bus_initialize failed: %s", esp_err_to_name(err));
+        return err;
+    }
 
-    ESP_LOGD(TAG, "Install Panel IO");
+    ESP_LOGI(TAG, "LVGL init: panel IO");
     esp_lcd_panel_io_handle_t io_handle  = NULL;
     esp_lcd_panel_io_spi_config_t io_config={};
     io_config.cs_gpio_num = DISPLAY_CS_PIN;
     io_config.dc_gpio_num = DISPLAY_DC_PIN;
-#ifdef FREENOVE_DEDIA_KIT_1_14_INCH
-    io_config.spi_mode = 3;
-#elif defined FREENOVE_DEDIA_KIT_3_5_INCH
     io_config.spi_mode = 0;
-#endif
-    io_config.pclk_hz = 80 * 1000 * 1000;
+    io_config.pclk_hz = DISPLAY_PCLK_HZ;
     io_config.trans_queue_depth = 10;
     io_config.lcd_cmd_bits = 8;
     io_config.lcd_param_bits = 8;
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(LCD_SPI_HOST, &io_config, &io_handle));
-#ifdef FREENOVE_DEDIA_KIT_3_5_INCH
-    st7796_vendor_config_t st7796_vendor_config = {
-        .init_cmds = st7796_lcd_init_cmds,
-        .init_cmds_size = sizeof(st7796_lcd_init_cmds) / sizeof(st7796_lcd_init_cmd_t),
-    };     
-#endif
-    ESP_LOGD(TAG, "Install Panel Config");
+    err = esp_lcd_new_panel_io_spi(LCD_SPI_HOST, &io_config, &io_handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_lcd_new_panel_io_spi failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "LVGL init: panel config");
     esp_lcd_panel_dev_config_t panel_config={};
     panel_config.reset_gpio_num = LCD_RST_PIN;
     panel_config.rgb_ele_order = DISPLAY_RGB_ORDER;
     panel_config.bits_per_pixel = 16;
-#ifdef FREENOVE_DEDIA_KIT_3_5_INCH
-    panel_config.vendor_config = &st7796_vendor_config;
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+    err = create_aipi_panel(io_handle, &panel_config);
+#else
+    err = create_freenove_panel(io_handle, &panel_config);
 #endif
-    ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_config, &panel));
-    esp_lcd_panel_reset(panel);               // Reset LCD screen
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = esp_lcd_panel_reset(panel);               // Reset LCD screen
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_lcd_panel_reset failed: %s", esp_err_to_name(err));
+        return err;
+    }
 
     reset_lcd();
-    esp_lcd_panel_init(panel);                // Initialize configuration registers
-    esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR);  // Color inversion
-    esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY);       // Display rotation 
-    esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y); // Mirror
+    err = esp_lcd_panel_init(panel);                // Initialize configuration registers
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_lcd_panel_init failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_invert_color(panel, DISPLAY_INVERT_COLOR));  // Color inversion
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_swap_xy(panel, DISPLAY_SWAP_XY));       // Display rotation 
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_lcd_panel_mirror(panel, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y)); // Mirror
 
     uint16_t *buffer = (uint16_t *)malloc(DISPLAY_WIDTH * sizeof(uint16_t));
     if (buffer == NULL) {
         ESP_LOGE(TAG, "Failed to allocate memory for display buffer");
-        return;
+        return ESP_ERR_NO_MEM;
     }
     for (int i = 0; i < DISPLAY_WIDTH; i++) {
         buffer[i] = 0xFFFF; // Fill with white color (RGB565 format)
@@ -233,14 +305,24 @@ void init_lvgl(void)
     for (int y = 0; y < DISPLAY_HEIGHT; y++) {
         esp_lcd_panel_draw_bitmap(panel, 0, y, DISPLAY_WIDTH, y + 1, buffer);
     }
-    ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
+    err = esp_lcd_panel_disp_on_off(panel, true);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_lcd_panel_disp_on_off failed: %s", esp_err_to_name(err));
+        free(buffer);
+        return err;
+    }
     free(buffer);
 
+    ESP_LOGI(TAG, "LVGL init: lv_init");
     lv_init();
 
     const lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
-    esp_err_t err = lvgl_port_init(&lvgl_cfg);
+    ESP_LOGI(TAG, "LVGL init: lvgl_port_init");
+    err = lvgl_port_init(&lvgl_cfg);
     ESP_LOGI(TAG, "lvgl_port_init: %s", err == ESP_OK ? "OK" : "Failed");
+    if (err != ESP_OK) {
+        return err;
+    }
 
     lvgl_port_display_cfg_t disp_cfg;
     disp_cfg.io_handle = io_handle;
@@ -266,7 +348,13 @@ void init_lvgl(void)
     disp_cfg.flags.direct_mode = 0;
 
     disp_handle = lvgl_port_add_disp(&disp_cfg);
+    if (disp_handle == NULL) {
+        ESP_LOGE(TAG, "lvgl_port_add_disp failed");
+        return ESP_FAIL;
+    }
     lv_display_set_offset(disp_handle, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y);
+
+    return ESP_OK;
 }
 
 void lvgl_ui(void)

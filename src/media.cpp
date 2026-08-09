@@ -30,7 +30,7 @@
 
 #define OPUS_ENCODER_BITRATE 32000
 #define OPUS_ENCODER_COMPLEXITY 2
-#define MIC_GAIN 4  // linear gain applied before encode; 4 = +12 dB; increase if VAD still misses speech
+#define MIC_GAIN 7  // linear gain applied before encode; 4 = +12 dB; increase if VAD still misses speech
 
 static i2s_chan_handle_t s_i2s_tx_chan = NULL;
 static i2s_chan_handle_t s_i2s_rx_chan = NULL;

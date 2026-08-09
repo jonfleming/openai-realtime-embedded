@@ -24,6 +24,16 @@ if(IDF_TARGET STREQUAL linux)
 endif()
 
 
+# AIPI-Lite board support:
+#   ON  -> build for AIPI-Lite
+#   OFF -> build for Freenove Media Kit (default)
+option(AIPI_LITE_BOARD "Build for AIPI-Lite board" ON)
+if(AIPI_LITE_BOARD)
+  add_compile_definitions(AIPI_LITE_BOARD=1)
+else()
+  add_compile_definitions(AIPI_LITE_BOARD=0)
+endif()
+
 add_compile_definitions(OPENAI_REALTIMEAPI="https://speech.techion.net/v1/realtime")
 
 set(COMPONENTS src)

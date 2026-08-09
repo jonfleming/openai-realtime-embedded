@@ -1,4 +1,4 @@
-# Open RealtimeAPI Embedded SDK
+# OpenAI RealtimeAPI Embedded SDK
 
 This fork is specifically customized for Freenove Media Kit and can be directly used on it.
 
@@ -15,6 +15,26 @@ It captures the non-obvious integration details and regression guardrails for:
 ## Platform/Device Support
 
 * [Freenove ESP32-S3-WROOM](https://www.amazon.com/gp/product/B0BMQ8F7FN)
+* AIPI-Lite (ESP32-S3 + ES8311)
+
+## Board Selection
+
+This project supports two board profiles selected at configure/build time:
+
+- Freenove Media Kit (default): `AIPI_LITE_BOARD=OFF`
+- AIPI-Lite: `AIPI_LITE_BOARD=ON`
+
+Examples:
+
+- Configure/build for Freenove (default): `idf.py -DAIPI_LITE_BOARD=OFF build`
+- Configure/build for AIPI-Lite: `idf.py -DAIPI_LITE_BOARD=ON build`
+
+Notes for AIPI-Lite:
+
+- GPIO10 power keep-alive is driven HIGH at startup.
+- I2S pins use the AIPI-Lite mapping (MCLK=6, BCLK=14, LRCLK=12, DIN=13, DOUT=11).
+- Speaker amplifier enable uses GPIO9 and is turned on during startup.
+- Display/backlight pins differ from Freenove (see AIPI-Lite-GPIO-Pins.md).
 
 ## Installation & Usage
 

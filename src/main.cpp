@@ -15,6 +15,11 @@
 #include "esp_http_server.h"
 #include "wifi_config.h"
 
+// AIPI-Lite hardware initialization
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+#include "aipi_lite_config.h"
+#endif
+
 static const char *TAG = "Main";
 
 extern "C" void app_main(void) {
@@ -27,12 +32,39 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(ret);
 
   ESP_ERROR_CHECK(esp_event_loop_create_default());
+  
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+  // Initialize AIPI-Lite specific hardware (power, audio, buttons)
+  if (aipi_lite_init_power_management() != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to initialize power management");
+    esp_restart();
+  }
+  if (aipi_lite_init_audio_pins() != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to initialize audio pins");
+    esp_restart();
+  }
+  if (aipi_lite_init_button_pins() != ESP_OK) {
+    ESP_LOGE(TAG, "Failed to initialize button pins");
+    esp_restart();
+  }
+#endif
+
   peer_init();
   oai_init_audio_capture();
   oai_init_audio_decoder();
 
-  init_lvgl();      
-  lvgl_ui();         
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+  // AIPI-Lite requires enabling the external speaker amp for audio playback.
+  aipi_lite_enable_speaker_amp(true);
+#endif
+
+  esp_err_t lvgl_ret = init_lvgl();
+  if (lvgl_ret == ESP_OK) {
+    lvgl_ui();
+  } else {
+    ESP_LOGE(TAG, "Display/LVGL init failed (%s). Continuing in headless mode.", esp_err_to_name(lvgl_ret));
+  }
+
   wifi_config_init();
   oai_webrtc();
 }
