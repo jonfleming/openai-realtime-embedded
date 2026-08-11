@@ -7,7 +7,20 @@
 
 #include "main.h"
 
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+// The Waveshare BSP owns the ES8311 codec (I2C bus + full-duplex I2S on the
+// Media Kit), so audio goes through bsp_audio_* + esp_codec_dev, not raw
+// I2S channel handles.
+#include "bsp/esp32_s3_touch_amoled_1_8.h"
+#include "esp_codec_dev.h"
+#endif
+
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+#define SPK_SAMPLE_RATE 16000
+#define SPK_BUFFER_SAMPLES 320  // 20ms at 16kHz
+#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+// Single shared I2S bus with the codec: pick one rate for both directions.
+// 16 kHz matches the mic/Opus encoder and the proven AIPI-Lite setup.
 #define SPK_SAMPLE_RATE 16000
 #define SPK_BUFFER_SAMPLES 320  // 20ms at 16kHz
 #else
@@ -63,6 +76,11 @@
 
 static i2s_chan_handle_t s_i2s_tx_chan = NULL;
 static i2s_chan_handle_t s_i2s_rx_chan = NULL;
+
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+static esp_codec_dev_handle_t s_spk_codec_dev = NULL;
+static esp_codec_dev_handle_t s_mic_codec_dev = NULL;
+#endif
 
 // ESP32-S3 has no APLL for I2S; PLL_160M gives MCLK within ~0.16% of
 // 256*fs, which the ES8311 tolerates (same as the official i2s_es8311 example).
@@ -123,6 +141,39 @@ void oai_init_audio_capture() {
     ESP_LOGE("Media", "Failed to initialize I2S RX std mode");
     return;
   }
+#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+  // Waveshare ESP32-S3 Touch AMOLED 1.8 ("Media Kit"): one ES8311 codec on
+  // the BSP-managed full-duplex I2S bus (SCLK 9 / MCLK 16 / LCLK 45 /
+  // DOUT 8 / DIN 10). The BSP also owns the I2C bus (SCL 14 / SDA 15) the
+  // codec sits on, so do NOT claim those pins with raw I2S here (GPIO 14 is
+  // the BSP's I2C SCL and breaks touch detection / display init).
+  ESP_LOGI("Media", "Waveshare board: initializing BSP audio (ES8311, 16 kHz mono)");
+  if (bsp_audio_init(NULL) != ESP_OK) {
+    ESP_LOGE("Media", "Failed to init BSP audio (I2S)");
+    return;
+  }
+  s_spk_codec_dev = bsp_audio_codec_speaker_init();
+  s_mic_codec_dev = bsp_audio_codec_microphone_init();
+  if (s_spk_codec_dev == NULL || s_mic_codec_dev == NULL) {
+    ESP_LOGE("Media", "BSP codec device init failed (spk=%p, mic=%p)",
+             s_spk_codec_dev, s_mic_codec_dev);
+    return;
+  }
+  esp_codec_dev_sample_info_t fs = {
+      .bits_per_sample = 16,
+      .channel = 1,
+      .channel_mask = 0,
+      .sample_rate = MIC_SAMPLE_RATE,
+      .mclk_multiple = 0,
+  };
+  if (esp_codec_dev_open(s_spk_codec_dev, &fs) != ESP_CODEC_DEV_OK ||
+      esp_codec_dev_open(s_mic_codec_dev, &fs) != ESP_CODEC_DEV_OK) {
+    ESP_LOGE("Media", "Failed to open BSP codec devices");
+    return;
+  }
+  esp_codec_dev_set_out_vol(s_spk_codec_dev, 70);
+  ESP_LOGI("Media", "OAI Audio Capture Initialized (BSP codec, 16 kHz mono in/out)");
+  return;
 #else
   i2s_chan_config_t tx_chan_cfg =
       I2S_CHANNEL_DEFAULT_CONFIG(TX_I2S_PORT, I2S_ROLE_MASTER);
@@ -237,6 +288,7 @@ void oai_init_audio_capture() {
 
 opus_int16 *output_buffer = NULL;
 opus_int32 *output_buffer_32 = NULL;
+opus_int16 *output_buffer_mono = NULL;
 OpusDecoder *opus_decoder = NULL;
 
 void oai_init_audio_decoder() {
@@ -253,6 +305,10 @@ void oai_init_audio_decoder() {
   // AIPI I2S uses 32-bit slots; 16-bit audio is left-aligned (<< 16).
   output_buffer_32 =
       (opus_int32 *)malloc(SPK_BUFFER_SAMPLES * SPK_CHANNELS * sizeof(opus_int32));
+#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+  // Mono speaker path through the BSP codec device (no L/R slots on the wire).
+  output_buffer_mono =
+      (opus_int16 *)malloc(SPK_BUFFER_SAMPLES * sizeof(opus_int16));
 #endif
 }
 
@@ -282,6 +338,18 @@ void oai_audio_decode(uint8_t *data, size_t size) {
                         portMAX_DELAY);
 #endif
     }
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+    if (s_spk_codec_dev != NULL && output_buffer_mono != NULL) {
+      // Mono speaker path: downmix the decoded stereo frame and push it
+      // through the BSP codec device (opened at 16 kHz mono).
+      for (int i = 0; i < decoded_size; ++i) {
+        int32_t m = ((int32_t)output_buffer[i * 2] + (int32_t)output_buffer[i * 2 + 1]) >> 1;
+        output_buffer_mono[i] = (opus_int16)m;
+      }
+      esp_codec_dev_write(s_spk_codec_dev, output_buffer_mono,
+                          decoded_size * sizeof(opus_int16));
+    }
+#endif
   }
 }
 
@@ -325,6 +393,22 @@ void oai_send_audio(PeerConnection *peer_connection) {
   size_t bytes_read = 0;
   static int regulator = 0;
 
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+  if (s_mic_codec_dev == NULL) {
+    return;
+  }
+  // BSP codec path: one blocking 20 ms mono 16-bit frame (1 s internal
+  // timeout; returns the full request on success).
+  int codec_ret = esp_codec_dev_read(s_mic_codec_dev, encoder_capture_buffer,
+                                     MIC_BUFFER_SAMPLES * sizeof(int16_t));
+  if (codec_ret != ESP_CODEC_DEV_OK) {
+    if (regulator % 100 == 0) {
+      ESP_LOGW("Media", "esp_codec_dev_read failed: %d", codec_ret);
+    }
+    return;
+  }
+  bytes_read = MIC_BUFFER_SAMPLES * sizeof(int16_t);
+#else
   if (s_i2s_rx_chan == NULL) {
     return;
   }
@@ -334,13 +418,29 @@ void oai_send_audio(PeerConnection *peer_connection) {
                    MIC_BUFFER_SAMPLES * MIC_I2S_CHANNELS * MIC_BYTES_PER_SLOT,
                    &bytes_read,
                    portMAX_DELAY);
+#endif
 
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+  int samples_read = (int)(bytes_read / sizeof(int16_t));  // mono 16-bit
+#else
   int samples_read = (int)(bytes_read / (MIC_I2S_CHANNELS * MIC_BYTES_PER_SLOT));
+#endif
   if (samples_read <= 0) {
     return;
   }
 
-#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+  // Plain 16-bit mono PCM straight from the codec (channel 0 of the shared
+  // bus). Apply the same MIC_GAIN headroom as the other boards.
+  int16_t* s16 = (int16_t*)(void*)encoder_capture_buffer;
+  const char* ch_str = "M";
+  int64_t left_energy = 0, right_energy = 0;
+  for (int i = 0; i < samples_read; ++i) {
+    left_energy += (int64_t)s16[i] * s16[i];
+    int32_t s = (int32_t)s16[i] * MIC_GAIN;
+    encoder_input_buffer[i] = s > 32767 ? 32767 : (s < -32768 ? -32768 : (int16_t)s);
+  }
+#elif defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
   // 32-bit slots with audio in the upper 16 bits (ES8311 16-bit
   // left-aligned). Mirror the proven Arduino sketch: sum L+R (the codec
   // sends the mono mic on both slots), then scale to 16-bit with 12x gain.
@@ -386,7 +486,11 @@ void oai_send_audio(PeerConnection *peer_connection) {
       n += snprintf(sample_log + n, sizeof(sample_log) - n, "%d ", encoder_input_buffer[i]);
     ESP_LOGI("Media", "%s", sample_log);
 
-#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+    if (left_energy == 0) {
+      ESP_LOGW("Media", "ZERO mic: all 16-bit samples are zero (codec ADC not producing data)");
+    }
+#elif defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
     if (left_energy == 0 && right_energy == 0) {
       // All-zero capture: the codec is not running (powered off / not
       // clocked), or DIN is not connected.

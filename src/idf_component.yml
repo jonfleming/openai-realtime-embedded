@@ -7,3 +7,4 @@ dependencies:
   espressif/esp_lcd_panel_io_additions: ==1.0.1
   espressif/esp_lcd_st77916: ==1.0.1
   waveshare/esp_lcd_st7735: ^2.0.0
+  waveshare/esp32_s3_touch_amoled_1_8: ^1.1.4

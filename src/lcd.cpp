@@ -5,8 +5,16 @@
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_lcd_panel_ops.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
 #include "esp_lcd_st7735.h"
+#endif
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#include "bsp/esp-bsp.h"
+#include "bsp/touch.h"
+#include "esp_io_expander.h"
+#include "esp_io_expander_tca9554.h"
 #endif
 #include <esp_log.h>
 
@@ -41,6 +49,13 @@
    #define DISPLAY_RGB_ORDER LCD_RGB_ELEMENT_ORDER_BGR
    #define DISPLAY_OFFSET_X 0
    #define DISPLAY_OFFSET_Y 0
+#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+   // Waveshare ESP32-S3 Touch AMOLED 1.8 (368x448 QSPI AMOLED).
+   // The managed BSP (waveshare/esp32_s3_touch_amoled_1_8) owns the panel,
+   // touch and the LVGL task (see init_lvgl); only the resolution is needed
+   // by the shared UI code below.
+   #define DISPLAY_WIDTH  368
+   #define DISPLAY_HEIGHT 448
 #else
    // Freenove Media Kit (3.5 inch)
    #define FREENOVE_DEDIA_KIT_3_5_INCH
@@ -79,6 +94,27 @@ typedef struct {
 } lvgl_screen_t;
 
 lvgl_screen_t lvgl_screen;
+
+// LVGL mutex access: the Waveshare BSP owns the lock on that board
+// (bsp_display_lock() wraps lvgl_port_lock() internally); the SPI-panel
+// boards use esp_lvgl_port directly.
+static void lcd_disp_lock(void)
+{
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+    bsp_display_lock(0);
+#else
+    lvgl_port_lock(0);
+#endif
+}
+
+static void lcd_disp_unlock(void)
+{
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+    bsp_display_unlock();
+#else
+    lvgl_port_unlock();
+#endif
+}
 
 #if defined(FREENOVE_DEDIA_KIT_3_5_INCH) && !(defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD)
 typedef struct {
@@ -136,6 +172,8 @@ static esp_err_t create_aipi_panel(esp_lcd_panel_io_handle_t io_handle,
     ESP_LOGI(TAG, "LVGL init: create AIPI panel OK");
     return ESP_OK;
 }
+#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+// Panel creation is owned by the managed BSP (bsp_display_start()).
 #else
 static esp_err_t create_freenove_panel(esp_lcd_panel_io_handle_t io_handle,
                                        esp_lcd_panel_dev_config_t *panel_config)
@@ -159,6 +197,7 @@ static esp_err_t create_freenove_panel(esp_lcd_panel_io_handle_t io_handle,
 }
 #endif
 
+#if !(defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD)
 /**********************
  * @brief Initialize backlight PWM control
  **********************/
@@ -227,9 +266,188 @@ void reset_lcd(void) {
     gpio_set_level(LCD_RST_PIN, 1);
     vTaskDelay(pdMS_TO_TICKS(20));
 }
+#endif
+
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#if LVGL_VERSION_MAJOR >= 9
+// The CO5300 QSPI panel writes 16-bit-aligned regions; round invalidated
+// areas to even coordinates (same callback as the Waveshare BSP).
+static void lcd_rounder_event_cb(lv_event_t *e)
+{
+    lv_area_t *area = (lv_area_t *)lv_event_get_param(e);
+    uint16_t x1 = area->x1;
+    uint16_t x2 = area->x2;
+    uint16_t y1 = area->y1;
+    uint16_t y2 = area->y2;
+    area->x1 = (x1 >> 1) << 1;
+    area->y1 = (y1 >> 1) << 1;
+    area->x2 = ((x2 >> 1) << 1) + 1;
+    area->y2 = ((y2 >> 1) << 1) + 1;
+}
+#endif
+#endif
 
 esp_err_t init_lvgl(void)
 {
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+    // Waveshare ESP32-S3 Touch AMOLED 1.8 (V1.0 hardware: SH8601 AMOLED +
+    // FT3168 touch; BSP ^1.1.4). Brightness is a panel command here (no LEDC
+    // backlight pin).
+    //
+    // We replicate bsp_display_start() with the BSP's public APIs instead of
+    // calling it directly: this project compiles with assertions disabled
+    // (NDEBUG), which turns ESP_ERROR_CHECK into a no-op, and the BSP treats
+    // a failed touch probe as fatal (NULL touch handle -> panic / reboot
+    // loop). Here the touch probe is retried and the app boots without touch
+    // input if it still fails, so a marginal probe can never crash the boot.
+    ESP_LOGI(TAG, "LVGL init: Waveshare AMOLED 1.8 (BSP display sequence)");
+
+    // 1. LVGL port: mutex + timer + render task
+    lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
+    esp_err_t err = lvgl_port_init(&lvgl_cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "lvgl_port_init failed: %s", esp_err_to_name(err));
+        return ESP_FAIL;
+    }
+
+    // 2. Power up the FT3168 touch controller and AMOLED panel: on this
+    //    board revision their reset/power lines are gated by the TCA9554 IO
+    //    expander (I2C 0x20). Neither the V1.0 nor the V2.0 BSP configures the
+    //    expander, so the touch never ACKs on I2C and the panel may stay off.
+    //    This pulse sequence mirrors Waveshare's Arduino reference
+    //    (02_Drawing_board demo): drive pins 0-2 low (assert), then high.
+    i2c_master_bus_handle_t i2c_bus = bsp_i2c_get_handle();
+    esp_io_expander_handle_t expander = NULL;
+    esp_err_t e = esp_io_expander_new_i2c_tca9554(i2c_bus, BSP_IO_EXPANDER_I2C_ADDRESS, &expander);
+    if (e == ESP_OK && expander != NULL) {
+        const uint32_t pins = IO_EXPANDER_PIN_NUM_0 | IO_EXPANDER_PIN_NUM_1 | IO_EXPANDER_PIN_NUM_2;
+        esp_io_expander_set_dir(expander, pins, IO_EXPANDER_OUTPUT);
+        esp_io_expander_set_level(expander, pins, 0);
+        vTaskDelay(pdMS_TO_TICKS(20));
+        esp_io_expander_set_level(expander, pins, 1);
+        ESP_LOGI(TAG, "TCA9554 power-up pulse (pins 0-2) done");
+    } else {
+        ESP_LOGW(TAG, "TCA9554 expander init failed: %s", esp_err_to_name(e));
+    }
+
+    // 3. Panel + QSPI IO (same call the BSP makes internally)
+    esp_lcd_panel_handle_t panel_handle = NULL;
+    esp_lcd_panel_io_handle_t io_handle = NULL;
+    bsp_display_config_t disp_config = {0};
+    err = bsp_display_new(&disp_config, &panel_handle, &io_handle);
+    if (err != ESP_OK || panel_handle == NULL || io_handle == NULL) {
+        ESP_LOGE(TAG, "bsp_display_new failed: %s", esp_err_to_name(err));
+        return ESP_FAIL;
+    }
+
+    // 4. Register the LVGL display. The buffer config follows this project's
+    // proven SPI-panel convention (see the AIPI-Lite/Freenove path): DMA
+    // capable draw buffer + no software rotation + 20-row buffer. The BSP's
+    // own defaults (plain-RAM 100-row buffer, sw_rotate) make the SPI driver
+    // allocate a ~74KB DMA bounce buffer on every flush, which fails once
+    // WebRTC/TLS have consumed the internal heap ("Failed to allocate priv TX
+    // buffer" -> blank screen).
+    const lvgl_port_display_cfg_t disp_cfg = {
+        .io_handle = io_handle,
+        .panel_handle = panel_handle,
+        .buffer_size = DISPLAY_WIDTH * 20,
+        .hres = BSP_LCD_H_RES,
+        .vres = BSP_LCD_V_RES,
+        .monochrome = false,
+        .rotation = {
+            .swap_xy = false,
+            .mirror_x = false,
+            .mirror_y = false,
+        },
+#if LVGL_VERSION_MAJOR >= 9
+        .color_format = LV_COLOR_FORMAT_RGB565,
+#endif
+        .flags = {
+            .buff_dma = true,
+            .buff_spiram = false,
+            .sw_rotate = false,
+            .swap_bytes = true,
+        },
+    };
+    const lvgl_port_display_rgb_cfg_t rgb_cfg = {
+        .flags = {
+            .bb_mode = false,
+            .avoid_tearing = false,
+        },
+    };
+    disp_handle = lvgl_port_add_disp_rgb(&disp_cfg, &rgb_cfg);
+    if (disp_handle == NULL) {
+        ESP_LOGE(TAG, "lvgl_port_add_disp_rgb failed");
+        return ESP_FAIL;
+    }
+#if LVGL_VERSION_MAJOR >= 9
+    lv_display_add_event_cb(disp_handle, lcd_rounder_event_cb, LV_EVENT_INVALIDATE_AREA, NULL);
+#endif
+
+    // 5. Touch: retry the BSP probe, then continue without touch if it fails.
+    //    Diagnostic: scan the bus first so a missing touch controller is
+    //    distinguishable from a dead I2C bus (expect 0x38 = FT3168 after the
+    //    TCA9554 power-up pulse above).
+    if (i2c_bus != NULL) {
+        uint8_t found[16] = {0};
+        int n = 0;
+        for (uint8_t addr = 0x08; addr < 0x78 && n < 16; addr++) {
+            if (i2c_master_probe(i2c_bus, addr, 20) == ESP_OK) {
+                found[n++] = addr;
+            }
+        }
+        if (n > 0) {
+            char buf[80] = "";
+            int off = 0;
+            for (int i = 0; i < n; i++) {
+                off += snprintf(buf + off, sizeof(buf) - off, "%s0x%02X", i ? "," : "", found[i]);
+            }
+            ESP_LOGI(TAG, "I2C scan (0x08-0x77): %s", buf);
+        } else {
+            ESP_LOGW(TAG, "I2C scan (0x08-0x77): no devices responded");
+        }
+    }
+
+    esp_lcd_touch_handle_t tp = NULL;
+    for (int attempt = 1; attempt <= 5; attempt++) {
+        tp = NULL;
+        err = bsp_touch_new(NULL, &tp);
+        if (err == ESP_OK && tp != NULL) {
+            break;
+        }
+        if (tp != NULL) {
+            esp_lcd_touch_del(tp);
+            tp = NULL;
+        }
+        ESP_LOGW(TAG, "Touch probe attempt %d/5 failed: %s", attempt, esp_err_to_name(err));
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+    if (tp != NULL) {
+        lvgl_port_touch_cfg_t touch_cfg = {
+            .disp = disp_handle,
+            .handle = tp,
+        };
+        if (lvgl_port_add_touch(&touch_cfg) != NULL) {
+            ESP_LOGI(TAG, "Touch ready");
+        } else {
+            ESP_LOGW(TAG, "lvgl_port_add_touch failed; running without touch input");
+        }
+    } else {
+        ESP_LOGW(TAG, "Touch init failed after retries; running without touch input");
+    }
+
+    // 6. Brightness (panel command on this board)
+    err = bsp_display_brightness_init();
+    if (err == ESP_OK) {
+        err = bsp_display_brightness_set(85);
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "bsp_display_brightness init/set failed: %s", esp_err_to_name(err));
+    }
+
+    ESP_LOGI(TAG, "LVGL init: display %dx%d ready", DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    return ESP_OK;
+#else
     esp_err_t err;
 
     ESP_LOGI(TAG, "LVGL init: backlight");
@@ -356,11 +574,12 @@ esp_err_t init_lvgl(void)
     lv_display_set_offset(disp_handle, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y);
 
     return ESP_OK;
+#endif
 }
 
 void lvgl_ui(void)
 {
-    lvgl_port_lock(0);  // Lock LVGL
+    lcd_disp_lock();  // Lock LVGL
     // Create main screen object
     lvgl_screen.screen = lv_obj_create(lv_scr_act());
     lv_obj_set_size(lvgl_screen.screen, DISPLAY_WIDTH, DISPLAY_HEIGHT);
@@ -376,14 +595,14 @@ void lvgl_ui(void)
     lv_obj_set_flex_flow(lvgl_screen.container, LV_FLEX_FLOW_COLUMN);                       // Vertical layout
     lv_obj_set_scroll_dir(lvgl_screen.container, LV_DIR_VER);                               // Vertical scroll
     lv_obj_set_scrollbar_mode(lvgl_screen.container, LV_SCROLLBAR_MODE_AUTO);               // Auto scroll
-    lvgl_port_unlock(); // Unlock LVGL
+    lcd_disp_unlock(); // Unlock LVGL
 }
 
 // Each time this function is called, create a label in the container with text content.
 // The label can wrap lines if needed. The background color of the label is green.
 void lvgl_ui_label_set_text(const char *text)
 {
-    lvgl_port_lock(0); 
+    lcd_disp_lock();
     lv_obj_t *btn = lv_btn_create(lvgl_screen.container);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x00FF00), LV_STATE_DEFAULT);
     lv_obj_set_width(btn, lv_pct(98));                                           // Full width
@@ -418,5 +637,5 @@ void lvgl_ui_label_set_text(const char *text)
         lv_coord_t y_aligned = lv_obj_get_y(last_child) - (visible_height / 2) + (lv_obj_get_height(last_child) / 2);
         lv_obj_scroll_to_y(lvgl_screen.container, y_aligned, LV_ANIM_OFF);
     }
-    lvgl_port_unlock(); 
+    lcd_disp_unlock();
 }

@@ -6,12 +6,12 @@ This file captures the non-obvious implementation details that made the Freenove
 
 ## Project Snapshot
 
-- Platform target: ESP32-S3 (Freenove Media Kit or AIPI-Lite)
+- Platform target: ESP32-S3 (Freenove Media Kit, AIPI-Lite, or Waveshare ESP32-S3 Touch AMOLED 1.8)
 - Transport: WebRTC (libpeer)
 - Audio codec: Opus
 - Signaling: HTTP SDP offer/answer
 - Realtime endpoint: compile-time `OPENAI_REALTIMEAPI` in `CMakeLists.txt`
-- Build configuration: `AIPI_LITE_BOARD=1` for AIPI-Lite, default for Freenove
+- Build configuration: board chosen via CMake options (see Board Selection below); Waveshare is the current default
 - Key app files:
   - `src/media.cpp`
   - `src/webrtc.cpp`
@@ -22,9 +22,12 @@ This file captures the non-obvious implementation details that made the Freenove
 
 ## Board Selection
 
-Set `AIPI_LITE_BOARD` in `CMakeLists.txt`:
-- `AIPI_LITE_BOARD=1`: AIPI-Lite (stripped-down, cheaper variant)
-- `AIPI_LITE_BOARD=0` or undefined: Freenove Media Kit (full-featured)
+Board is chosen by CMake options in `CMakeLists.txt` (mutually exclusive; Waveshare is the default `ON`):
+- `-DWAVESHARE_AMOLED_1_8_BOARD=ON` (default): Waveshare ESP32-S3 Touch AMOLED 1.8 — also overlays the `sdkconfig.waveshare_amoled_1_8` defaults
+- `-DAIPI_LITE_BOARD=ON`: AIPI-Lite (stripped-down, cheaper variant)
+- Both `OFF` (`-DWAVESHARE_AMOLED_1_8_BOARD=OFF -DAIPI_LITE_BOARD=OFF`): Freenove Media Kit (full-featured)
+
+For the default Waveshare build no flag is needed: plain `idf.py build` is correct.
 
 ## Hardware Differences
 
@@ -89,6 +92,48 @@ Do NOT run the mic at a different rate than the speaker on AIPI-Lite: the shared
 7. DTLS must use ECDSA for aiortc-style speech-to-speech interop.
 - `deps/libpeer/src/config.h` sets `CONFIG_DTLS_USE_ECDSA 1`.
 - Rationale in file comment: avoid DTLS handshake failure from no common ciphers with RSA-only server certs.
+
+## ESP-IDF v5.5.5 Environment Setup (Windows)
+
+This repo targets IDF v5.5.5 with the ESP32-S3. The Espressif IDF installer put the tools/toolchains and the Python venv under `C:\Espressif\tools`; the IDF source lives at `C:\esp\v5.5.5\esp-idf`.
+
+### PowerShell (interactive build / flash / monitor)
+
+The launcher opens a PowerShell session with the IDF environment:
+
+    C:\Users\jonfl\Dropbox\Tools\esp.cmd
+
+(`esp5.cmd` is the same thing; both just launch PowerShell and dot-source the installer-generated profile `C:\Espressif\tools\Microsoft.v5.5.5.PowerShell_profile.ps1`. `C:\Users\jonfl\Dropbox\Tools` is on PATH, so `esp.cmd` can also be typed directly from any PowerShell.)
+
+The profile sets:
+- `IDF_PATH=C:\esp\v5.5.5\esp-idf`
+- `IDF_TOOLS_PATH=C:\Espressif\tools`
+- `IDF_PYTHON_ENV_PATH=C:\Espressif\tools\python\v5.5.5\venv`
+- `IDF_CCACHE_ENABLE=1`
+- PATH prepended with ccache, cmake 3.30.2, ninja 1.12.1, the xtensa/riscv toolchains, and the venv `Scripts` dir; defines `idf.py`, `esptool.py`, `espefuse.py`, `espsecure.py`, `parttool.py` aliases.
+
+Then, from that PowerShell (board flag optional — Waveshare is the default):
+
+    idf.py build
+    idf.py -p COM4 flash
+    idf.py -p COM4 monitor
+
+VS Code: the ESP-IDF extension is already wired up in `.vscode/settings.json` (`idf.espIdfPathWin`, `idf.toolsPathWin`, `idf.currentSetup` = v5.5.5, `idf.portWin` = COM4, `IDF_TARGET=esp32s3`).
+
+### Git Bash / agent shells
+
+`source $IDF_PATH/export.sh` does **not** work here: it probes the system Python (3.14) and looks for `C:\Espressif\python_env\...`, which the installer layout doesn't create. Instead set the variables manually and call idf.py through the venv python:
+
+    export IDF_PATH=C:/esp/v5.5.5/esp-idf
+    export IDF_TOOLS_PATH=C:/Espressif/tools
+    export IDF_PYTHON_ENV_PATH=C:/Espressif/tools/python/v5.5.5/venv
+    export PATH="$IDF_TOOLS_PATH/python/v5.5.5/venv/Scripts:$IDF_TOOLS_PATH/ccache/4.12.1/ccache-4.12.1-windows-x86_64:$IDF_TOOLS_PATH/ninja/1.12.1:$IDF_TOOLS_PATH/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/bin:$IDF_TOOLS_PATH/cmake/3.30.2/bin:$PATH"
+    "$IDF_TOOLS_PATH/python/v5.5.5/venv/Scripts/python.exe" "$IDF_PATH/tools/idf.py" build
+
+For fast, object-level rebuilds of an already-configured tree, drive ninja directly (ccache must be on PATH):
+
+    export PATH="/c/Espressif/tools/ccache/4.12.1/ccache-4.12.1-windows-x86_64:$PATH"
+    /c/Espressif/tools/ninja/1.12.1/ninja.exe -C build <target>
 
 ## Known Good Runtime Flow
 

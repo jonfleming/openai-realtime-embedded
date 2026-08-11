@@ -24,17 +24,29 @@ if(IDF_TARGET STREQUAL linux)
 endif()
 
 
-# AIPI-Lite board support:
-#   ON  -> build for AIPI-Lite
-#   OFF -> build for Freenove Media Kit (default)
-option(AIPI_LITE_BOARD "Build for AIPI-Lite board" ON)
-if(AIPI_LITE_BOARD)
+# Board support (mutually exclusive, precedence Waveshare > AIPI-Lite > Freenove):
+#   -DWAVESHARE_AMOLED_1_8_BOARD=ON -> Waveshare ESP32-S3 Touch AMOLED 1.8
+#   -DAIPI_LITE_BOARD=ON            -> AIPI-Lite (default)
+#   -DAIPI_LITE_BOARD=OFF           -> Freenove Media Kit
+option(WAVESHARE_AMOLED_1_8_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 1.8" ON)
+option(AIPI_LITE_BOARD "Build for AIPI-Lite board" OFF)
+if(WAVESHARE_AMOLED_1_8_BOARD)
+  add_compile_definitions(WAVESHARE_AMOLED_1_8_BOARD=1)
+  add_compile_definitions(AIPI_LITE_BOARD=0)
+elseif(AIPI_LITE_BOARD)
+  add_compile_definitions(WAVESHARE_AMOLED_1_8_BOARD=0)
   add_compile_definitions(AIPI_LITE_BOARD=1)
 else()
+  add_compile_definitions(WAVESHARE_AMOLED_1_8_BOARD=0)
   add_compile_definitions(AIPI_LITE_BOARD=0)
 endif()
 
 add_compile_definitions(OPENAI_REALTIMEAPI="https://speech.techion.net/v1/realtime")
+
+# Waveshare board-specific sdkconfig overlay (USB-Serial-JTAG console, etc.)
+if(WAVESHARE_AMOLED_1_8_BOARD)
+  set(SDKCONFIG_DEFAULTS "sdkconfig.defaults;sdkconfig.waveshare_amoled_1_8")
+endif()
 
 set(COMPONENTS src)
 set(EXTRA_COMPONENT_DIRS "src" "components/srtp" "components/peer" "components/esp-libopus")
