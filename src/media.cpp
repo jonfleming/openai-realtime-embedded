@@ -7,19 +7,28 @@
 
 #include "main.h"
 
-#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+// 2.06 watch board: ES8311 codec for the speaker + ES7210 ADC for the dual
+// digital mics, both on the BSP-managed I2C/I2S buses. Audio goes through
+// bsp_audio_* + esp_codec_dev at 16 kHz stereo (see the Waveshare
+// Spec_Analyzer example), not raw I2S channel handles.
+#include "bsp/esp32_s3_touch_amoled_2_06.h"
+#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
 // The Waveshare BSP owns the ES8311 codec (I2C bus + full-duplex I2S on the
 // Media Kit), so audio goes through bsp_audio_* + esp_codec_dev, not raw
 // I2S channel handles.
 #include "bsp/esp32_s3_touch_amoled_1_8.h"
+#endif
+#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
 #include "esp_codec_dev.h"
 #endif
 
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
 #define SPK_SAMPLE_RATE 16000
 #define SPK_BUFFER_SAMPLES 320  // 20ms at 16kHz
-#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
-// Single shared I2S bus with the codec: pick one rate for both directions.
+#elif defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
+// Waveshare boards: one shared I2S bus with the codecs (ES8311 DAC and, on
+// the 2.06, the ES7210 ADC), so both directions must run at one rate.
 // 16 kHz matches the mic/Opus encoder and the proven AIPI-Lite setup.
 #define SPK_SAMPLE_RATE 16000
 #define SPK_BUFFER_SAMPLES 320  // 20ms at 16kHz
@@ -48,6 +57,12 @@
 #define ADC_DATA_PIN 13  // DIN (from mic)
 #define SPEAKER_AMP_ENABLE_PIN 9
 #define MIC_BYTES_PER_SLOT 4   // 32-bit slots
+#elif defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+// 2.06: ES7210 dual-mic ADC delivers 16-bit stereo PCM (L/R interleaved) at
+// 16 kHz on the shared I2S bus, same rate as the ES8311 speaker DAC.
+#define MIC_SAMPLE_RATE 16000
+#define MIC_BUFFER_SAMPLES 320  // 20ms at 16kHz per channel
+#define MIC_BYTES_PER_SLOT 2    // 16-bit samples (stereo)
 #else
 // Freenove Media Kit: direct MEMS mic + NS4168 amp on separate I2S buses.
 #define MIC_SAMPLE_RATE 16000
@@ -74,10 +89,17 @@
 #define OPUS_ENCODER_COMPLEXITY 2
 #define MIC_GAIN 7  // linear gain applied before encode; 4 = +12 dB; increase if VAD still misses speech
 
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+// Linear gain applied to the averaged L+R downmix before the mono speaker.
+// 2 restores the full-scale sum (+6 dB over the plain average); reduce to 1
+// if loud content clips, or raise the codec volume instead.
+#define SPK_GAIN 2
+#endif
+
 static i2s_chan_handle_t s_i2s_tx_chan = NULL;
 static i2s_chan_handle_t s_i2s_rx_chan = NULL;
 
-#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
 static esp_codec_dev_handle_t s_spk_codec_dev = NULL;
 static esp_codec_dev_handle_t s_mic_codec_dev = NULL;
 #endif
@@ -141,15 +163,32 @@ void oai_init_audio_capture() {
     ESP_LOGE("Media", "Failed to initialize I2S RX std mode");
     return;
   }
-#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
-  // Waveshare ESP32-S3 Touch AMOLED 1.8 ("Media Kit"): one ES8311 codec on
-  // the BSP-managed full-duplex I2S bus (SCLK 9 / MCLK 16 / LCLK 45 /
-  // DOUT 8 / DIN 10). The BSP also owns the I2C bus (SCL 14 / SDA 15) the
-  // codec sits on, so do NOT claim those pins with raw I2S here (GPIO 14 is
-  // the BSP's I2C SCL and breaks touch detection / display init).
+#elif defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
+  // Waveshare boards: codecs on the BSP-managed I2C/I2S buses.
+  //  - 1.8 ("Media Kit"): one ES8311 codec on the full-duplex I2S bus
+  //    (SCLK 9 / MCLK 16 / LCLK 45 / DOUT 8 / DIN 10).
+  //  - 2.06 (watch): ES8311 speaker DAC + ES7210 dual-mic ADC on one shared
+  //    I2S bus (SCLK 41 / MCLK 16 / LCLK 45 / DOUT 40 / DSIN 42).
+  // The BSP owns the I2C bus (SCL 14 / SDA 15) the codecs sit on, so do NOT
+  // claim those pins with raw I2S here (GPIO 14 is the BSP's I2C SCL and
+  // breaks touch detection / display init).
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+  ESP_LOGI("Media", "Waveshare board: initializing BSP audio (ES8311 spk + ES7210 mic, 16 kHz stereo)");
+#else
   ESP_LOGI("Media", "Waveshare board: initializing BSP audio (ES8311, 16 kHz mono)");
+#endif
   if (bsp_audio_init(NULL) != ESP_OK) {
     ESP_LOGE("Media", "Failed to init BSP audio (I2S)");
+    return;
+  }
+  // The BSP's codec init functions only bring up the I2C bus when
+  // i2s_data_if is still NULL; since bsp_audio_init() ran first they skip
+  // it, leaving i2c_handle NULL and the codec control interfaces unusable
+  // (es8311_codec_new -> "Wrong codec config", codec never configured ->
+  // all-zero mic / silent DAC). Create the bus here explicitly.
+  esp_err_t i2c_ret = bsp_i2c_init();
+  if (i2c_ret != ESP_OK) {
+    ESP_LOGE("Media", "bsp_i2c_init failed: %s", esp_err_to_name(i2c_ret));
     return;
   }
   s_spk_codec_dev = bsp_audio_codec_speaker_init();
@@ -161,7 +200,13 @@ void oai_init_audio_capture() {
   }
   esp_codec_dev_sample_info_t fs = {
       .bits_per_sample = 16,
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+      // 2.06: ES7210 outputs L/R from the dual mics; the ES8311 DAC plays
+      // stereo back (Waveshare Spec_Analyzer recipe: 16 kHz / 16-bit / 2ch).
+      .channel = 2,
+#else
       .channel = 1,
+#endif
       .channel_mask = 0,
       .sample_rate = MIC_SAMPLE_RATE,
       .mclk_multiple = 0,
@@ -171,8 +216,21 @@ void oai_init_audio_capture() {
     ESP_LOGE("Media", "Failed to open BSP codec devices");
     return;
   }
-  esp_codec_dev_set_out_vol(s_spk_codec_dev, 70);
-  ESP_LOGI("Media", "OAI Audio Capture Initialized (BSP codec, 16 kHz mono in/out)");
+  // Codec volume: the codec-dev default curve maps 0-100 to -50..0 dB, and
+  // the uninitialized dev->volume starts at 0 (-50 dB) until set here.
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+  // 2.06: volume 60 on the codec-dev curve is -20 dB (≈ -16 dB effective at
+  // the DAC after the BSP's PA compensation), which is far too quiet on the
+  // watch speaker. Use 100 = 0 dB (≈ +3.6 dB effective), same as the 1.8
+  // board. Also set the ES7210 ADC gain (24 dB, the Waveshare example's
+  // CODEC_DEFAULT_ADC_VOLUME).
+  esp_codec_dev_set_out_vol(s_spk_codec_dev, 100);
+  esp_codec_dev_set_in_gain(s_mic_codec_dev, 24.0);
+  ESP_LOGI("Media", "OAI Audio Capture Initialized (BSP codec, 16 kHz stereo in/out, vol=100)");
+#else
+  esp_codec_dev_set_out_vol(s_spk_codec_dev, 100);
+  ESP_LOGI("Media", "OAI Audio Capture Initialized (BSP codec, 16 kHz mono in/out, vol=100)");
+#endif
   return;
 #else
   i2s_chan_config_t tx_chan_cfg =
@@ -338,13 +396,20 @@ void oai_audio_decode(uint8_t *data, size_t size) {
                         portMAX_DELAY);
 #endif
     }
-#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+    if (s_spk_codec_dev != NULL) {
+      // Stereo passthrough: the ES8311 DAC is opened at 16 kHz stereo, so
+      // the decoded stereo frame goes straight to the codec device.
+      esp_codec_dev_write(s_spk_codec_dev, output_buffer,
+                          decoded_size * SPK_CHANNELS * sizeof(opus_int16));
+    }
+#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
     if (s_spk_codec_dev != NULL && output_buffer_mono != NULL) {
       // Mono speaker path: downmix the decoded stereo frame and push it
       // through the BSP codec device (opened at 16 kHz mono).
       for (int i = 0; i < decoded_size; ++i) {
-        int32_t m = ((int32_t)output_buffer[i * 2] + (int32_t)output_buffer[i * 2 + 1]) >> 1;
-        output_buffer_mono[i] = (opus_int16)m;
+        int32_t m = (((int32_t)output_buffer[i * 2] + (int32_t)output_buffer[i * 2 + 1]) >> 1) * SPK_GAIN;
+        output_buffer_mono[i] = m > 32767 ? 32767 : (m < -32768 ? -32768 : (opus_int16)m);
       }
       esp_codec_dev_write(s_spk_codec_dev, output_buffer_mono,
                           decoded_size * sizeof(opus_int16));
@@ -393,21 +458,30 @@ void oai_send_audio(PeerConnection *peer_connection) {
   size_t bytes_read = 0;
   static int regulator = 0;
 
-#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
   if (s_mic_codec_dev == NULL) {
     return;
   }
-  // BSP codec path: one blocking 20 ms mono 16-bit frame (1 s internal
-  // timeout; returns the full request on success).
+  // BSP codec path: one blocking 20 ms frame (1 s internal timeout; returns
+  // the full request on success). 1.8 = mono 16-bit; 2.06 = stereo 16-bit
+  // (L/R interleaved) from the ES7210 dual mics.
   int codec_ret = esp_codec_dev_read(s_mic_codec_dev, encoder_capture_buffer,
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+                                     MIC_BUFFER_SAMPLES * 2 * sizeof(int16_t));
+#else
                                      MIC_BUFFER_SAMPLES * sizeof(int16_t));
+#endif
   if (codec_ret != ESP_CODEC_DEV_OK) {
     if (regulator % 100 == 0) {
       ESP_LOGW("Media", "esp_codec_dev_read failed: %d", codec_ret);
     }
     return;
   }
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+  bytes_read = MIC_BUFFER_SAMPLES * 2 * sizeof(int16_t);
+#else
   bytes_read = MIC_BUFFER_SAMPLES * sizeof(int16_t);
+#endif
 #else
   if (s_i2s_rx_chan == NULL) {
     return;
@@ -420,7 +494,9 @@ void oai_send_audio(PeerConnection *peer_connection) {
                    portMAX_DELAY);
 #endif
 
-#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+  int samples_read = (int)(bytes_read / (2 * sizeof(int16_t)));  // stereo frames
+#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
   int samples_read = (int)(bytes_read / sizeof(int16_t));  // mono 16-bit
 #else
   int samples_read = (int)(bytes_read / (MIC_I2S_CHANNELS * MIC_BYTES_PER_SLOT));
@@ -429,7 +505,24 @@ void oai_send_audio(PeerConnection *peer_connection) {
     return;
   }
 
-#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+  // ES7210 dual digital mics: 16-bit stereo PCM (L/R interleaved) at 16 kHz.
+  // Average L+R (same as the Waveshare Spec_Analyzer example), then apply
+  // the MIC_GAIN headroom like the other boards.
+  int16_t* s16 = (int16_t*)(void*)encoder_capture_buffer;
+  const char* ch_str = "L+R";
+  int64_t left_energy = 0, right_energy = 0;
+  for (int i = 0; i < samples_read; ++i) {
+    int16_t l = s16[i * 2];
+    int16_t r = s16[i * 2 + 1];
+    left_energy  += (int64_t)l * l;
+    right_energy += (int64_t)r * r;
+  }
+  for (int i = 0; i < samples_read; ++i) {
+    int32_t s = (((int32_t)s16[i * 2] + (int32_t)s16[i * 2 + 1]) >> 1) * MIC_GAIN;
+    encoder_input_buffer[i] = s > 32767 ? 32767 : (s < -32768 ? -32768 : (int16_t)s);
+  }
+#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
   // Plain 16-bit mono PCM straight from the codec (channel 0 of the shared
   // bus). Apply the same MIC_GAIN headroom as the other boards.
   int16_t* s16 = (int16_t*)(void*)encoder_capture_buffer;
@@ -486,7 +579,11 @@ void oai_send_audio(PeerConnection *peer_connection) {
       n += snprintf(sample_log + n, sizeof(sample_log) - n, "%d ", encoder_input_buffer[i]);
     ESP_LOGI("Media", "%s", sample_log);
 
-#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+    if (left_energy == 0 && right_energy == 0) {
+      ESP_LOGW("Media", "ZERO mic: all stereo samples are zero (ES7210 ADC not producing data)");
+    }
+#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
     if (left_energy == 0) {
       ESP_LOGW("Media", "ZERO mic: all 16-bit samples are zero (codec ADC not producing data)");
     }

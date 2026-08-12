@@ -10,9 +10,16 @@
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
 #include "esp_lcd_st7735.h"
 #endif
-#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
+// Exactly one Waveshare BSP is in the build per board profile (see the
+// FREEBUFF_BOARD rules in src/idf_component.yml), so these shared bsp/
+// headers resolve to the active board's BSP (1.8 or 2.06).
 #include "bsp/esp-bsp.h"
 #include "bsp/touch.h"
+#endif
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+// 1.8 (V1.0) only: the FT3168 touch + AMOLED panel are power-gated by the
+// TCA9554 IO expander; the 2.06 board wires touch reset to a GPIO directly.
 #include "esp_io_expander.h"
 #include "esp_io_expander_tca9554.h"
 #endif
@@ -49,6 +56,13 @@
    #define DISPLAY_RGB_ORDER LCD_RGB_ELEMENT_ORDER_BGR
    #define DISPLAY_OFFSET_X 0
    #define DISPLAY_OFFSET_Y 0
+#elif defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+   // Waveshare ESP32-S3 Touch AMOLED 2.06 (410x502 QSPI AMOLED, CO5300
+   // controller, watch form factor). The managed BSP
+   // (waveshare/esp32_s3_touch_amoled_2_06) owns the panel, touch and audio
+   // (see init_lvgl); only the resolution is needed by the shared UI code.
+   #define DISPLAY_WIDTH  410
+   #define DISPLAY_HEIGHT 502
 #elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
    // Waveshare ESP32-S3 Touch AMOLED 1.8 (368x448 QSPI AMOLED).
    // The managed BSP (waveshare/esp32_s3_touch_amoled_1_8) owns the panel,
@@ -95,12 +109,12 @@ typedef struct {
 
 lvgl_screen_t lvgl_screen;
 
-// LVGL mutex access: the Waveshare BSP owns the lock on that board
+// LVGL mutex access: the Waveshare BSP owns the lock on those boards
 // (bsp_display_lock() wraps lvgl_port_lock() internally); the SPI-panel
 // boards use esp_lvgl_port directly.
 static void lcd_disp_lock(void)
 {
-#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
     bsp_display_lock(0);
 #else
     lvgl_port_lock(0);
@@ -109,7 +123,7 @@ static void lcd_disp_lock(void)
 
 static void lcd_disp_unlock(void)
 {
-#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
     bsp_display_unlock();
 #else
     lvgl_port_unlock();
@@ -172,8 +186,8 @@ static esp_err_t create_aipi_panel(esp_lcd_panel_io_handle_t io_handle,
     ESP_LOGI(TAG, "LVGL init: create AIPI panel OK");
     return ESP_OK;
 }
-#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
-// Panel creation is owned by the managed BSP (bsp_display_start()).
+#elif defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
+// Panel creation is owned by the managed BSP (see init_lvgl below).
 #else
 static esp_err_t create_freenove_panel(esp_lcd_panel_io_handle_t io_handle,
                                        esp_lcd_panel_dev_config_t *panel_config)
@@ -197,7 +211,7 @@ static esp_err_t create_freenove_panel(esp_lcd_panel_io_handle_t io_handle,
 }
 #endif
 
-#if !(defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD)
+#if !(defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD)
 /**********************
  * @brief Initialize backlight PWM control
  **********************/
@@ -268,10 +282,11 @@ void reset_lcd(void) {
 }
 #endif
 
-#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
 #if LVGL_VERSION_MAJOR >= 9
-// The CO5300 QSPI panel writes 16-bit-aligned regions; round invalidated
-// areas to even coordinates (same callback as the Waveshare BSP).
+// The Waveshare QSPI AMOLED panels (SH8601/CO5300) write 16-bit-aligned
+// regions; round invalidated areas to even coordinates (same callback as the
+// Waveshare BSP).
 static void lcd_rounder_event_cb(lv_event_t *e)
 {
     lv_area_t *area = (lv_area_t *)lv_event_get_param(e);
@@ -289,9 +304,9 @@ static void lcd_rounder_event_cb(lv_event_t *e)
 
 esp_err_t init_lvgl(void)
 {
-#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
-    // Waveshare ESP32-S3 Touch AMOLED 1.8 (V1.0 hardware: SH8601 AMOLED +
-    // FT3168 touch; BSP ^1.1.4). Brightness is a panel command here (no LEDC
+#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
+    // Waveshare ESP32-S3 Touch AMOLED boards (1.8 V1.0: SH8601 + FT3168;
+    // 2.06: CO5300 + FT3168). Brightness is a panel command here (no LEDC
     // backlight pin).
     //
     // We replicate bsp_display_start() with the BSP's public APIs instead of
@@ -300,7 +315,11 @@ esp_err_t init_lvgl(void)
     // a failed touch probe as fatal (NULL touch handle -> panic / reboot
     // loop). Here the touch probe is retried and the app boots without touch
     // input if it still fails, so a marginal probe can never crash the boot.
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+    ESP_LOGI(TAG, "LVGL init: Waveshare AMOLED 2.06 (BSP display sequence)");
+#else
     ESP_LOGI(TAG, "LVGL init: Waveshare AMOLED 1.8 (BSP display sequence)");
+#endif
 
     // 1. LVGL port: mutex + timer + render task
     lvgl_port_cfg_t lvgl_cfg = ESP_LVGL_PORT_INIT_CONFIG();
@@ -310,13 +329,16 @@ esp_err_t init_lvgl(void)
         return ESP_FAIL;
     }
 
-    // 2. Power up the FT3168 touch controller and AMOLED panel: on this
-    //    board revision their reset/power lines are gated by the TCA9554 IO
-    //    expander (I2C 0x20). Neither the V1.0 nor the V2.0 BSP configures the
-    //    expander, so the touch never ACKs on I2C and the panel may stay off.
-    //    This pulse sequence mirrors Waveshare's Arduino reference
-    //    (02_Drawing_board demo): drive pins 0-2 low (assert), then high.
     i2c_master_bus_handle_t i2c_bus = bsp_i2c_get_handle();
+
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+    // 2. (1.8 V1.0 only) Power up the FT3168 touch controller and AMOLED
+    //    panel: on this board revision their reset/power lines are gated by
+    //    the TCA9554 IO expander (I2C 0x20). Neither the V1.0 nor the V2.0
+    //    BSP configures the expander, so the touch never ACKs on I2C and the
+    //    panel may stay off. This pulse sequence mirrors Waveshare's Arduino
+    //    reference (02_Drawing_board demo): drive pins 0-2 low, then high.
+    //    The 2.06 board does not use the expander (touch reset = GPIO9).
     esp_io_expander_handle_t expander = NULL;
     esp_err_t e = esp_io_expander_new_i2c_tca9554(i2c_bus, BSP_IO_EXPANDER_I2C_ADDRESS, &expander);
     if (e == ESP_OK && expander != NULL) {
@@ -329,11 +351,15 @@ esp_err_t init_lvgl(void)
     } else {
         ESP_LOGW(TAG, "TCA9554 expander init failed: %s", esp_err_to_name(e));
     }
+#endif
 
-    // 3. Panel + QSPI IO (same call the BSP makes internally)
+    // 3. Panel + QSPI IO (same call the BSP makes internally). max_transfer_sz
+    //    must be > 0: the 2.06 BSP asserts it in bsp_display_new().
     esp_lcd_panel_handle_t panel_handle = NULL;
     esp_lcd_panel_io_handle_t io_handle = NULL;
-    bsp_display_config_t disp_config = {0};
+    bsp_display_config_t disp_config = {
+        .max_transfer_sz = DISPLAY_WIDTH * DISPLAY_HEIGHT * 2,
+    };
     err = bsp_display_new(&disp_config, &panel_handle, &io_handle);
     if (err != ESP_OK || panel_handle == NULL || io_handle == NULL) {
         ESP_LOGE(TAG, "bsp_display_new failed: %s", esp_err_to_name(err));
@@ -386,8 +412,8 @@ esp_err_t init_lvgl(void)
 
     // 5. Touch: retry the BSP probe, then continue without touch if it fails.
     //    Diagnostic: scan the bus first so a missing touch controller is
-    //    distinguishable from a dead I2C bus (expect 0x38 = FT3168 after the
-    //    TCA9554 power-up pulse above).
+    //    distinguishable from a dead I2C bus (expect 0x38 = FT3168 on both
+    //    boards; on the 1.8 it only answers after the TCA9554 pulse above).
     if (i2c_bus != NULL) {
         uint8_t found[16] = {0};
         int n = 0;

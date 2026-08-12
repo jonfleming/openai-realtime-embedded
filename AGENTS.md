@@ -6,7 +6,7 @@ This file captures the non-obvious implementation details that made the Freenove
 
 ## Project Snapshot
 
-- Platform target: ESP32-S3 (Freenove Media Kit, AIPI-Lite, or Waveshare ESP32-S3 Touch AMOLED 1.8)
+- Platform target: ESP32-S3 (Freenove Media Kit, AIPI-Lite, Waveshare ESP32-S3 Touch AMOLED 1.8, or 2.06 watch)
 - Transport: WebRTC (libpeer)
 - Audio codec: Opus
 - Signaling: HTTP SDP offer/answer
@@ -22,12 +22,31 @@ This file captures the non-obvious implementation details that made the Freenove
 
 ## Board Selection
 
-Board is chosen by CMake options in `CMakeLists.txt` (mutually exclusive; Waveshare is the default `ON`):
-- `-DWAVESHARE_AMOLED_1_8_BOARD=ON` (default): Waveshare ESP32-S3 Touch AMOLED 1.8 — also overlays the `sdkconfig.waveshare_amoled_1_8` defaults
-- `-DAIPI_LITE_BOARD=ON`: AIPI-Lite (stripped-down, cheaper variant)
+Board is chosen by CMake options in `CMakeLists.txt` (mutually exclusive; Waveshare 1.8 is the default `ON`, precedence Waveshare 2.06 > 1.8 > AIPI-Lite > Freenove):
+- `-DWAVESHARE_AMOLED_2_06_BOARD=ON`: Waveshare ESP32-S3 Touch AMOLED 2.06 (watch) — overlays `sdkconfig.waveshare_amoled_2_06` (32 MB QIO flash etc.)
+- `-DWAVESHARE_AMOLED_1_8_BOARD=ON` (default): Waveshare ESP32-S3 Touch AMOLED 1.8 — overlays `sdkconfig.waveshare_amoled_1_8`
+- `-DAIPI_LITE_BOARD=ON` (with `WAVESHARE_AMOLED_1_8_BOARD=OFF`): AIPI-Lite (stripped-down, cheaper variant)
 - Both `OFF` (`-DWAVESHARE_AMOLED_1_8_BOARD=OFF -DAIPI_LITE_BOARD=OFF`): Freenove Media Kit (full-featured)
 
-For the default Waveshare build no flag is needed: plain `idf.py build` is correct.
+For the default Waveshare 1.8 build no flag is needed: plain `idf.py build` is correct.
+
+### Exactly one Waveshare BSP per build (important)
+
+The 1.8 and 2.06 boards use different managed BSPs (`waveshare/esp32_s3_touch_amoled_1_8`
+and `waveshare/esp32_s3_touch_amoled_2_06`) that export the **same `bsp_*` symbols**
+(`bsp_i2c_init`, `bsp_display_new`, `bsp_audio_init`, ...), so linking both would
+fail with duplicate-symbol errors. The active BSP is selected in
+`src/idf_component.yml` with `rules:` on the `FREEBUFF_BOARD` environment
+variable, which `CMakeLists.txt` sets (to `waveshare_amoled_1_8` or
+`waveshare_amoled_2_06`) before `project()` runs the component manager. The
+unused BSP is not downloaded/built at all — never add both to
+`src/CMakeLists.txt` `REQUIRES`.
+
+`src/CMakeLists.txt` must therefore NOT list the board BSPs (or the
+1.8-only `esp_io_expander*`, which flow from the 1.8 BSP's public deps); they
+come from `src/idf_component.yml`. When switching boards, delete the generated
+`sdkconfig` (or use `idf.py fullclean`) so the per-board sdkconfig overlay
+regenerates (an existing sdkconfig keeps stale values).
 
 ## Hardware Differences
 
@@ -45,6 +64,34 @@ For the default Waveshare build no flag is needed: plain `idf.py build` is corre
 - **Backlight PWM**: Freenove uses GPIO2; AIPI-Lite uses GPIO3 (strapping pin, works but shows warning)
 - **Display SPI**: Different pins due to different board layout
 - **Buttons**: Left button on GPIO1 (AIPI-Lite) vs GPIO19 (Freenove); Right button on GPIO42
+
+### Waveshare boards (1.8 and 2.06)
+
+Both boards route display/touch/audio through their managed BSP; the BSP owns
+the I2C bus (SCL 14 / SDA 15) and the I2S pins. Do NOT claim those pins with
+raw drivers (GPIO 14 is the BSP's I2C SCL; claiming it breaks touch/display).
+
+| Feature | 1.8 (V1.0) | 2.06 (watch) |
+| --- | --- | --- |
+| Display | 368x448 QSPI AMOLED, SH8601 | 410x502 QSPI AMOLED, CO5300 (driven via the SH8601 QSPI driver in the official BSP) |
+| Touch | FT3168 (power-gated by TCA9554 expander — needs the boot pulse in `lcd.cpp`) | FT3168 (reset = GPIO9, no expander) |
+| Audio | ES8311 codec, mono 16 kHz in/out | ES8311 DAC + ES7210 dual-mic ADC, **stereo 16 kHz** in/out |
+| Console | USB-Serial-JTAG (native USB) — `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` | USB-UART bridge — default UART0 console |
+| Flash | 16 MB | 32 MB (QIO) |
+
+The 2.06 audio path (`src/media.cpp`) mirrors the Waveshare Spec_Analyzer
+recipe: open both `esp_codec_dev` handles at 16 kHz / 16-bit / 2 channels,
+`esp_codec_dev_set_in_gain(mic, 24.0)`, speaker volume 100 (0 dB on the codec-dev curve; the Waveshare example's 60 is -20 dB and far too quiet), read 16-bit stereo
+L/R PCM and downmix to mono before Opus encode. The 1.8 path stays mono 16
+kHz. `esp_codec_dev` reconfigures the shared I2S slot/clock on open, so the
+BSP's mono 22050 Hz default is harmless.
+
+Display init (`src/lcd.cpp`) replicates `bsp_display_start()` with public BSP
+APIs (touch probe retried, never fatal) and uses this project's proven
+LVGL buffer convention (DMA buffer, `sw_rotate=false`, 20 rows) instead of the
+BSP defaults, which cause "Failed to allocate priv TX buffer" once
+WebRTC/TLS consume the internal heap. `max_transfer_sz` must be nonzero (the
+2.06 BSP asserts it).
 
 ## AIPI-Lite Audio (ES8311 codec)
 

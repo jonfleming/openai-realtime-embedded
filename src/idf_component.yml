@@ -7,4 +7,20 @@ dependencies:
   espressif/esp_lcd_panel_io_additions: ==1.0.1
   espressif/esp_lcd_st77916: ==1.0.1
   waveshare/esp_lcd_st7735: ^2.0.0
-  waveshare/esp32_s3_touch_amoled_1_8: ^1.1.4
+  # Board BSP: exactly ONE of the two Waveshare BSPs resolves per build.
+  # Both BSPs export the same bsp_* symbols, so only the active board's BSP
+  # may be linked (the other board profile would fail to link with duplicate
+  # symbols). CMakeLists.txt sets the FREEBUFF_BOARD environment variable
+  # before project() runs the component manager; the if: rules below select
+  # which BSP (and therefore which panel/touch/audio driver) is downloaded.
+  # Values: "waveshare_amoled_1_8" (default) or "waveshare_amoled_2_06".
+  waveshare/esp32_s3_touch_amoled_1_8:
+    version: ^1.1.4
+    require: public
+    rules:
+      - if: "$FREEBUFF_BOARD != waveshare_amoled_2_06"
+  waveshare/esp32_s3_touch_amoled_2_06:
+    version: ^2.0.0
+    require: public
+    rules:
+      - if: "$FREEBUFF_BOARD == waveshare_amoled_2_06"

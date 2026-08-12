@@ -1,0 +1,21 @@
+# Waveshare ESP32-S3 Touch AMOLED 2.06 board-specific sdkconfig overlay.
+# Loaded on top of sdkconfig.defaults when WAVESHARE_AMOLED_2_06_BOARD=ON
+# (see the SDKCONFIG_DEFAULTS wiring in CMakeLists.txt).
+
+# The 2.06 ships with 32 MB of external flash (vs 16 MB on the other boards).
+# QIO is the flash mode Waveshare's examples mandate for this board (the S3's
+# QSPI display + WebRTC/TLS benefit from the extra flash bandwidth).
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHSIZE_32MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="32MB"
+
+# Waveshare-recommended performance settings for this board (their ESP-IDF
+# example sdkconfig.defaults files). The 410x502 QSPI AMOLED + WebRTC/TLS
+# benefit from 80 MHz octal PSRAM and the 64-byte data cache line.
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_ESP32S3_DATA_CACHE_LINE_64B=y
+
+# Denser screen: enable the 24px Montserrat font in addition to the
+# project-wide 20px one (the UI uses montserrat_20; the watch face / status
+# text can use the larger face later).
+CONFIG_LV_FONT_MONTSERRAT_24=y

@@ -24,27 +24,50 @@ if(IDF_TARGET STREQUAL linux)
 endif()
 
 
-# Board support (mutually exclusive, precedence Waveshare > AIPI-Lite > Freenove):
-#   -DWAVESHARE_AMOLED_1_8_BOARD=ON -> Waveshare ESP32-S3 Touch AMOLED 1.8
-#   -DAIPI_LITE_BOARD=ON            -> AIPI-Lite (default)
-#   -DAIPI_LITE_BOARD=OFF           -> Freenove Media Kit
-option(WAVESHARE_AMOLED_1_8_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 1.8" ON)
+# Board support (mutually exclusive, precedence Waveshare 2.06 > Waveshare 1.8 >
+# AIPI-Lite > Freenove):
+#   -DWAVESHARE_AMOLED_2_06_BOARD=ON -> Waveshare ESP32-S3 Touch AMOLED 2.06 (watch)
+#   -DWAVESHARE_AMOLED_1_8_BOARD=ON  -> Waveshare ESP32-S3 Touch AMOLED 1.8 (default)
+#   -DAIPI_LITE_BOARD=ON             -> AIPI-Lite
+#   -DAIPI_LITE_BOARD=OFF            -> Freenove Media Kit
+#
+# The two Waveshare boards use different managed BSPs that export the same
+# bsp_* symbols, so exactly one must be linked per build. The active BSP is
+# chosen in src/idf_component.yml via the FREEBUFF_BOARD environment variable
+# (set below, before project() runs the component manager).
+option(WAVESHARE_AMOLED_2_06_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 2.06" ON)
+option(WAVESHARE_AMOLED_1_8_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 1.8" OFF)
 option(AIPI_LITE_BOARD "Build for AIPI-Lite board" OFF)
-if(WAVESHARE_AMOLED_1_8_BOARD)
+if(WAVESHARE_AMOLED_2_06_BOARD)
+  add_compile_definitions(WAVESHARE_AMOLED_2_06_BOARD=1)
+  add_compile_definitions(WAVESHARE_AMOLED_1_8_BOARD=0)
+  add_compile_definitions(AIPI_LITE_BOARD=0)
+  add_compile_definitions(WAVESHARE_BSP_BOARD=1)
+  set(ENV{FREEBUFF_BOARD} "waveshare_amoled_2_06")
+elseif(WAVESHARE_AMOLED_1_8_BOARD)
+  add_compile_definitions(WAVESHARE_AMOLED_2_06_BOARD=0)
   add_compile_definitions(WAVESHARE_AMOLED_1_8_BOARD=1)
   add_compile_definitions(AIPI_LITE_BOARD=0)
+  add_compile_definitions(WAVESHARE_BSP_BOARD=1)
+  set(ENV{FREEBUFF_BOARD} "waveshare_amoled_1_8")
 elseif(AIPI_LITE_BOARD)
+  add_compile_definitions(WAVESHARE_AMOLED_2_06_BOARD=0)
   add_compile_definitions(WAVESHARE_AMOLED_1_8_BOARD=0)
   add_compile_definitions(AIPI_LITE_BOARD=1)
+  set(ENV{FREEBUFF_BOARD} "waveshare_amoled_1_8")
 else()
+  add_compile_definitions(WAVESHARE_AMOLED_2_06_BOARD=0)
   add_compile_definitions(WAVESHARE_AMOLED_1_8_BOARD=0)
   add_compile_definitions(AIPI_LITE_BOARD=0)
+  set(ENV{FREEBUFF_BOARD} "waveshare_amoled_1_8")
 endif()
 
 add_compile_definitions(OPENAI_REALTIMEAPI="https://speech.techion.net/v1/realtime")
 
-# Waveshare board-specific sdkconfig overlay (USB-Serial-JTAG console, etc.)
-if(WAVESHARE_AMOLED_1_8_BOARD)
+# Waveshare board-specific sdkconfig overlay
+if(WAVESHARE_AMOLED_2_06_BOARD)
+  set(SDKCONFIG_DEFAULTS "sdkconfig.defaults;sdkconfig.waveshare_amoled_2_06")
+elseif(WAVESHARE_AMOLED_1_8_BOARD)
   set(SDKCONFIG_DEFAULTS "sdkconfig.defaults;sdkconfig.waveshare_amoled_1_8")
 endif()
 

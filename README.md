@@ -16,18 +16,38 @@ It captures the non-obvious integration details and regression guardrails for:
 
 * [Freenove ESP32-S3-WROOM](https://www.amazon.com/gp/product/B0BMQ8F7FN)
 * AIPI-Lite (ESP32-S3 + ES8311)
+* Waveshare ESP32-S3 Touch AMOLED 1.8 (default)
+* Waveshare ESP32-S3 Touch AMOLED 2.06 (watch form factor)
 
 ## Board Selection
 
-This project supports two board profiles selected at configure/build time:
+This project supports four board profiles selected at configure/build time
+(precedence Waveshare 2.06 > Waveshare 1.8 > AIPI-Lite > Freenove):
 
-- Freenove Media Kit (default): `AIPI_LITE_BOARD=OFF`
-- AIPI-Lite: `AIPI_LITE_BOARD=ON`
+- Waveshare ESP32-S3 Touch AMOLED 1.8 (default): `WAVESHARE_AMOLED_1_8_BOARD=ON`
+- Waveshare ESP32-S3 Touch AMOLED 2.06: `-DWAVESHARE_AMOLED_2_06_BOARD=ON`
+- AIPI-Lite: `-DAIPI_LITE_BOARD=ON` (with `WAVESHARE_AMOLED_1_8_BOARD=OFF`)
+- Freenove Media Kit: `-DAIPI_LITE_BOARD=OFF -DWAVESHARE_AMOLED_1_8_BOARD=OFF`
 
 Examples:
 
-- Configure/build for Freenove (default): `idf.py -DAIPI_LITE_BOARD=OFF build`
-- Configure/build for AIPI-Lite: `idf.py -DAIPI_LITE_BOARD=ON build`
+- Configure/build for Waveshare 1.8 (default): plain `idf.py build`
+- Configure/build for Waveshare 2.06: `idf.py -DWAVESHARE_AMOLED_2_06_BOARD=ON build`
+- Configure/build for AIPI-Lite: `idf.py -DWAVESHARE_AMOLED_1_8_BOARD=OFF -DAIPI_LITE_BOARD=ON build`
+- Configure/build for Freenove: `idf.py -DWAVESHARE_AMOLED_1_8_BOARD=OFF -DAIPI_LITE_BOARD=OFF build`
+
+Notes for the Waveshare 2.06 board:
+
+- 2.06" 410x502 QSPI AMOLED (CO5300), FT3168 touch, 32 MB flash, 8 MB PSRAM,
+  ES8311 speaker DAC + ES7210 dual-mic ADC.
+- Uses the official managed BSP `waveshare/esp32_s3_touch_amoled_2_06`; only
+  one Waveshare BSP is linked per build (they export the same `bsp_*`
+  symbols), selected by the `FREEBUFF_BOARD` env var set in `CMakeLists.txt`.
+- Console is the default UART0 (the board's USB-C connects to a USB-UART
+  bridge, not the ESP32-S3 native USB), so no console sdkconfig override is
+  needed (unlike the 1.8 board).
+- Flash size is 32 MB (QIO) via `sdkconfig.waveshare_amoled_2_06`.
+- See `WAVESHARE-AMOLED-2.06-SUPPORT.md` for the full port/bring-up notes.
 
 Notes for AIPI-Lite:
 
