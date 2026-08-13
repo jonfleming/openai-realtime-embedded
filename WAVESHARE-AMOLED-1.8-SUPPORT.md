@@ -259,14 +259,17 @@ waits. Root cause chain:
    the strap. This board has NO reset button (only PWR + BOOT side buttons),
    so the only escape is unplugging/replugging USB (or toggling PWR).
 
-Workaround (no power cycle needed): run `build/s3_recover.py COM4` after
+Workaround (no power cycle needed): run `python/s3_recover.py COM4` after
 flashing. It clears `RTC_CNTL_OPTION1_REG` FORCE_DOWNLOAD_BOOT and arms the
-RTC watchdog, which performs a real chip reset that boots the app. NOTE: the
-board runs on an internal battery, so unplugging USB does NOT power-cycle the
-chip, and there is no RST button (only PWR + BOOT side buttons). After this
-session's recovery, the latch is clear and `idf.py flash`'s own hard reset
-boots the app directly (esptool's ESP32-S3 target clears the flag on every
-hard reset).
+RTC watchdog, which performs a real chip reset that boots the app (this is
+esptool's `--after watchdog-reset` mechanism, espressif/esp-idf#13287).
+NOTE: the board runs on an internal battery, so unplugging USB does NOT
+power-cycle the chip, and there is no RST button (only PWR + BOOT side
+buttons). **Simplest escape: toggle PWR** — a quick PWR press powers the
+AXP2101 rail off, a second press powers it back on = a real power cycle that
+re-samples the straps. After this session's recovery, the latch is clear and
+`idf.py flash`'s own hard reset boots the app directly (esptool's ESP32-S3
+target clears the flag on every hard reset).
 
 ### 12.2 Console must be USB-Serial-JTAG on this board
 
@@ -335,10 +338,13 @@ now boots the app directly (see 12.1 update).
   every hard reset). `idf.py -p COM4 monitor` attaches to the running app.
 - If the chip ever ends up stuck in download mode again (silent port,
   `boot:0x23 (DOWNLOAD)` on reset), run
-  `build/s3_recover.py COM4` — it clears `RTC_CNTL_OPTION1_REG`
-  FORCE_DOWNLOAD_BOOT and arms the RTC watchdog for a real chip reset that
-  boots the app. No physical power cycle needed (the battery makes USB
-  unplugging ineffective anyway; the board has no RST button).
+  `python/s3_recover.py COM4` (or toggle PWR twice for a physical power
+  cycle) — it clears `RTC_CNTL_OPTION1_REG` FORCE_DOWNLOAD_BOOT and arms
+  the RTC watchdog for a real chip reset that boots the app. No physical
+  power cycle needed (the battery makes USB unplugging ineffective anyway;
+  the board has no RST button). The script is tracked at `python/s3_recover.py`
+  (a `build/s3_recover.py` copy exists for convenience but is wiped whenever
+  the build dir is cleaned).
 - Build/flash helper: `build/ws_flash.ps1` (loads the user's IDF env, runs
   `idf.py build` + `flash`).
 
@@ -361,10 +367,23 @@ NULL-dereferenced at esp_lvgl_port_touch.c:51 → panic → reboot loop.
 
 Fix (`src/lcd.cpp`): the Waveshare branch no longer calls
 `bsp_display_start()`. It replicates the sequence with public BSP APIs
-(`lvgl_port_init` → `bsp_display_new` → `lvgl_port_add_disp_rgb` → touch →
+(`lvgl_port_init` → `bsp_display_new` → `lvgl_port_add_disp` → touch →
 brightness) so that **touch failure is never fatal**: the probe is retried 5×
 (250 ms apart) and the app boots headless (no touch input) if it still
 fails. Also added an I2C bus scan diagnostic at boot.
+
+**B2. White horizontal line through text on both Waveshare boards (QSPI
+panel).** `lvgl_port_add_disp_rgb()` is the API for RGB-interface panels;
+it marks the display as RGB, so esp_lvgl_port's flush callback calls
+`lv_disp_flush_ready()` immediately after queueing the (async) SPI
+transaction. LVGL then reuses the single 20-row draw buffer for the next
+chunk while the SPI DMA is still reading it — the DMA captures a mix of two
+adjacent chunks and every ~20-row buffer boundary keeps a corrupted strip
+(invisible on the white container, but showing as a white line where it
+crosses the green buttons/text). Fix: use `lvgl_port_add_disp()` for these
+QSPI panels (same as the AIPI/Freenove path). It registers the SPI
+`on_color_trans_done` callback, so `lv_disp_flush_ready()` fires only after
+the transfer completes and the buffer is never reused mid-transfer.
 
 **B. Blank display: `Failed to allocate priv TX buffer` on every draw.** The
 BSP's LVGL config (plain-RAM 100-row buffer, `sw_rotate=true`) makes the SPI

@@ -395,15 +395,20 @@ esp_err_t init_lvgl(void)
             .swap_bytes = true,
         },
     };
-    const lvgl_port_display_rgb_cfg_t rgb_cfg = {
-        .flags = {
-            .bb_mode = false,
-            .avoid_tearing = false,
-        },
-    };
-    disp_handle = lvgl_port_add_disp_rgb(&disp_cfg, &rgb_cfg);
+    // NOTE: use lvgl_port_add_disp() (not lvgl_port_add_disp_rgb()) here: this is
+    // a QSPI/SPI panel, and the *_rgb variant sets the display type to RGB. In
+    // that mode esp_lvgl_port's flush callback calls lv_disp_flush_ready()
+    // immediately after queueing the (async) SPI transaction, so LVGL reuses the
+    // single draw buffer while the SPI DMA is still reading it. The DMA then
+    // captures a mix of two adjacent 20-row chunks, leaving a corrupted
+    // horizontal strip at each buffer boundary -- visible as a white line
+    // through text/buttons (white on white is invisible on the container). The
+    // plain variant registers the SPI on_color_trans_done callback and only
+    // signals flush ready once the transfer has finished, matching the proven
+    // AIPI-Lite/Freenove path below.
+    disp_handle = lvgl_port_add_disp(&disp_cfg);
     if (disp_handle == NULL) {
-        ESP_LOGE(TAG, "lvgl_port_add_disp_rgb failed");
+        ESP_LOGE(TAG, "lvgl_port_add_disp failed");
         return ESP_FAIL;
     }
 #if LVGL_VERSION_MAJOR >= 9

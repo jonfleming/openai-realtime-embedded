@@ -92,8 +92,17 @@ fullclean`) so the per-board overlay regenerates.
 - `init_lvgl()` replicates `bsp_display_start()` with public BSP APIs (same as
   the 1.8 path — see `WAVESHARE-AMOLED-1.8-SUPPORT.md` §12.7 for why the
   direct call is unsafe with this project's `NDEBUG` build): `lvgl_port_init`
-  → `bsp_display_new` → `lvgl_port_add_disp_rgb` → touch (probe retried 5×,
+  → `bsp_display_new` → `lvgl_port_add_disp` → touch (probe retried 5×,
   **never fatal**) → brightness.
+
+  > **Why `lvgl_port_add_disp` and not `lvgl_port_add_disp_rgb`?** The panel is
+  > QSPI/SPI, not RGB. The `_rgb` variant marks the display as RGB, which makes
+  > esp_lvgl_port call `lv_disp_flush_ready()` immediately after queueing the
+  > async SPI transaction; LVGL then reuses the single 20-row draw buffer while
+  > the SPI DMA is still reading it, leaving a corrupted horizontal strip at
+  > each buffer boundary (seen as a white line through text/buttons). The plain
+  > variant signals flush-ready only after the SPI transfer completes (see
+  > `WAVESHARE-AMOLED-1.8-SUPPORT.md` §12.7 issue B2).
 - **`max_transfer_sz` must be nonzero** — the 2.06 BSP asserts it in
   `bsp_display_new()` (the 1.8 BSP doesn't check). Set to
   `DISPLAY_WIDTH * DISPLAY_HEIGHT * 2`.
@@ -168,9 +177,10 @@ dirs, `-D SDKCONFIG=<build_dir>/sdkconfig` so each board gets a clean config):
 - The 2.06's USB-C is a **USB-UART bridge**, so it enumerates as a normal
   COM port and `idf.py -p COMx flash` / `monitor` just work (no
   USB-Serial-JTAG, no strap/download-mode dance like the 1.8).
-- **No RST button** (PWR + BOOT only) — a stuck ROM-download-mode scenario
-  needs a real power cycle, same as the 1.8 (the existing `build/s3_recover.py`
-  trick applies if the port goes silent).
+- **No RST button** (PWR + BOOT only) — if the chip ever sticks in ROM
+  download mode, recover with `python/s3_recover.py COMx` (esptool's
+  `--after watchdog-reset`, tracked in the repo; a PWR double-press is the
+  physical power-cycle equivalent). Same as the 1.8.
 
 ## 9. Validation checklist (hardware bring-up, in order)
 
