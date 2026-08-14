@@ -182,16 +182,36 @@ For fast, object-level rebuilds of an already-configured tree, drive ninja direc
     export PATH="/c/Espressif/tools/ccache/4.12.1/ccache-4.12.1-windows-x86_64:$PATH"
     /c/Espressif/tools/ninja/1.12.1/ninja.exe -C build <target>
 
-## Known Good Runtime Flow
+## Interrupt Conversation Feature
 
-1. `main.cpp` initializes NVS/network/audio and starts WebRTC loop.
-2. `peer_connection_create_offer()` generates SDP offer.
-3. `http.cpp` POSTs SDP to `OPENAI_REALTIMEAPI + "/calls"`.
-4. Remote SDP answer is applied.
-5. Peer reaches `PEER_CONNECTION_COMPLETED`.
-6. SCTP `onopen` fires, creates `oai-events` channel.
-7. Client sends `SESSION_UPDATE`, then `GREETING`.
-8. Audio publisher task sends Opus mic frames continuously.
+When the device is in an active conversation with the speech-to-speech backend, pressing the interrupt button (second button on each board) toggles interruption mode:
+
+1. **First press** - Enters interruption mode:
+   - Stops any currently playing audio response
+   - Disables microphone capture (no more Opus packets sent to server)
+   - All incoming WebRTC audio from server is ignored
+
+2. **Second press** - Returns to normal operation:
+   - Resume normal question/answer conversation
+   - Microphone capture resumes
+   - Server responses play normally
+
+### Button Locations by Board
+
+| Board | Interrupt Button Pin |
+|-------|---------------------|
+| Freenove Media Kit | GPIO19 (left button) |
+| AIPI-Lite | GPIO1 (left button, also power button) |
+| Waveshare 1.8 | GPIO42 (right button) |
+| Waveshare 2.06 | GPIO42 (right button) |
+
+### Implementation Details
+
+- Interrupt state is shared globally (`s_interrupted` in `main.cpp`)
+- Button press uses external interrupt handler with negative edge trigger
+- `oai_send_audio_task()` checks interruption flag every 50ms when interrupted
+- `oai_send_audio()` in media.cpp returns early if interrupted (no mic capture)
+- Audio playback is stopped via BSP codec close or I2S TX channel disable
 
 ## File-Level Change Guide
 

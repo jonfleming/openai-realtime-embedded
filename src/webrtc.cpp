@@ -75,6 +75,11 @@ void oai_send_audio_task(void *user_data) {
   }
 
   while (1) {
+    // Check if interrupted - skip sending audio if so
+    if (oai_is_interrupted()) {
+      vTaskDelay(pdMS_TO_TICKS(50)); // Poll every 50ms when interrupted
+      continue;
+    }
     oai_send_audio(peer_connection);
   }
 }

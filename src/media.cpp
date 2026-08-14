@@ -455,6 +455,11 @@ void oai_init_audio_encoder() {
 }
 
 void oai_send_audio(PeerConnection *peer_connection) {
+  // If interrupted, skip audio capture and encoding entirely
+  if (oai_is_interrupted()) {
+    return;
+  }
+  
   size_t bytes_read = 0;
   static int regulator = 0;
 
