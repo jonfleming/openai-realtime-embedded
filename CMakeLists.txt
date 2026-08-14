@@ -62,7 +62,36 @@ else()
   set(ENV{FREEBUFF_BOARD} "waveshare_amoled_1_8")
 endif()
 
-add_compile_definitions(OPENAI_REALTIMEAPI="https://speech.techion.net/v1/realtime")
+add_compile_definitions(OPENAI_REALTIMEAPI="https://speech.fleming.ai/v1/realtime")
+
+# TURN relay server for WebRTC/ICE media. The URL is public; the username and
+# password (coturn long-term credentials) come from the gitignored
+# privateConfig.json when present. Without credentials the client skips the
+# TURN allocation and falls back to host/STUN candidates only.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/privateConfig.json")
+  file(READ privateConfig.json PV_CFG)
+  string(JSON PV_TURN_USERNAME ERROR_VARIABLE PV_TURN_USERNAME_ERR GET "${PV_CFG}" turn_username)
+  if(PV_TURN_USERNAME_ERR)
+    set(PV_TURN_USERNAME "")
+    set(PV_TURN_PASSWORD "")
+    set(PV_TURN_SERVER "")
+  else()
+    string(JSON PV_TURN_PASSWORD GET "${PV_CFG}" turn_password)
+    string(JSON PV_TURN_SERVER ERROR_VARIABLE PV_TURN_SERVER_ERR GET "${PV_CFG}" turn_server)
+    if(PV_TURN_SERVER_ERR)
+      set(PV_TURN_SERVER "turn:turn.fleming.ai:3478")
+    endif()
+  endif()
+else()
+  set(PV_TURN_USERNAME "")
+  set(PV_TURN_PASSWORD "")
+  set(PV_TURN_SERVER "")
+endif()
+if(PV_TURN_SERVER)
+  add_compile_definitions(TURN_SERVER_URL="${PV_TURN_SERVER}")
+endif()
+add_compile_definitions(TURN_USERNAME="${PV_TURN_USERNAME}")
+add_compile_definitions(TURN_PASSWORD="${PV_TURN_PASSWORD}")
 
 # Waveshare board-specific sdkconfig overlay
 if(WAVESHARE_AMOLED_2_06_BOARD)

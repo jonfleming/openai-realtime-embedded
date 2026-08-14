@@ -16,6 +16,20 @@
 #endif
 
 #define TICK_INTERVAL 5
+
+// TURN relay server for WebRTC/ICE media. Compile-time definitions come from
+// CMakeLists.txt (TURN_USERNAME/TURN_PASSWORD are read from privateConfig.json
+// when present). Signaling still goes to OPENAI_REALTIMEAPI; only the media
+// path (ICE checks, DTLS, RTP, SCTP) is relayed through the TURN server.
+#ifndef TURN_SERVER_URL
+#define TURN_SERVER_URL "turn:turn.fleming.ai:3478"
+#endif
+#ifndef TURN_USERNAME
+#define TURN_USERNAME ""
+#endif
+#ifndef TURN_PASSWORD
+#define TURN_PASSWORD ""
+#endif
 #define GREETING                                                    \
   "{\"type\": \"response.create\", \"response\": {\"modalities\": " \
   "[\"audio\", \"text\"], \"instructions\": \"Say 'How can I help?.'\"}}"
@@ -139,6 +153,18 @@ void oai_webrtc() {
       .on_request_keyframe = NULL,
       .user_data = NULL,
   };
+
+  // libpeer needs a username/password for a turn: server (long-term
+  // credentials). Without credentials the allocation is skipped gracefully and
+  // only host/STUN candidates are used.
+  if (TURN_USERNAME[0] != '\0') {
+    peer_connection_config.ice_servers[0] = (IceServer){
+        .urls = TURN_SERVER_URL,
+        .username = TURN_USERNAME,
+        .credential = TURN_PASSWORD,
+    };
+    ESP_LOGI(LOG_TAG, "ICE will use TURN server %s", TURN_SERVER_URL);
+  }
 
   peer_connection = peer_connection_create(&peer_connection_config);
   if (peer_connection == NULL) {

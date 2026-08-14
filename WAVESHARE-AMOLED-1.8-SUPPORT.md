@@ -257,7 +257,8 @@ waits. Root cause chain:
    issue #970): **USB-initiated resets cannot exit download mode once
    entered**; only a real power-on reset (EN pulse / power cycle) re-samples
    the strap. This board has NO reset button (only PWR + BOOT side buttons),
-   so the only escape is unplugging/replugging USB (or toggling PWR).
+   so the only escape is unplugging/replugging USB (or a PWR power cycle:
+   long-press 6+ s powers off via the PMU, short press powers back on).
 
 Workaround (no power cycle needed): run `python/s3_recover.py COM4` after
 flashing. It clears `RTC_CNTL_OPTION1_REG` FORCE_DOWNLOAD_BOOT and arms the
@@ -265,9 +266,10 @@ RTC watchdog, which performs a real chip reset that boots the app (this is
 esptool's `--after watchdog-reset` mechanism, espressif/esp-idf#13287).
 NOTE: the board runs on an internal battery, so unplugging USB does NOT
 power-cycle the chip, and there is no RST button (only PWR + BOOT side
-buttons). **Simplest escape: toggle PWR** — a quick PWR press powers the
-AXP2101 rail off, a second press powers it back on = a real power cycle that
-re-samples the straps. After this session's recovery, the latch is clear and
+buttons). **Simplest escape: PWR button** — long-press (6+ s) powers the
+board off via the PMU, a short press powers it back on = a real power cycle
+that re-samples the straps (default hardware PMU behavior, no code needed).
+After this session's recovery, the latch is clear and
 `idf.py flash`'s own hard reset boots the app directly (esptool's ESP32-S3
 target clears the flag on every hard reset).
 
@@ -338,8 +340,9 @@ now boots the app directly (see 12.1 update).
   every hard reset). `idf.py -p COM4 monitor` attaches to the running app.
 - If the chip ever ends up stuck in download mode again (silent port,
   `boot:0x23 (DOWNLOAD)` on reset), run
-  `python/s3_recover.py COM4` (or toggle PWR twice for a physical power
-  cycle) — it clears `RTC_CNTL_OPTION1_REG` FORCE_DOWNLOAD_BOOT and arms
+  `python/s3_recover.py COM4` (or power-cycle via PWR: long-press 6+ s
+  powers off, short press powers back on) — it clears `RTC_CNTL_OPTION1_REG`
+  FORCE_DOWNLOAD_BOOT and arms
   the RTC watchdog for a real chip reset that boots the app. No physical
   power cycle needed (the battery makes USB unplugging ineffective anyway;
   the board has no RST button). The script is tracked at `python/s3_recover.py`

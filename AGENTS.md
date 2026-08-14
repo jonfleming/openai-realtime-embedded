@@ -248,6 +248,35 @@ Preserve and document any local deltas. Especially keep:
 - `KEEPALIVE_CONNCHECK 0`
 - `CONFIG_AUDIO_BUFFER_SIZE 0` default
 
+## TURN Relay (coturn) — WebRTC Media Path
+
+- Signaling is unchanged: the SDP offer/answer still goes over HTTP to
+  `OPENAI_REALTIMEAPI` (e.g. `https://speech.fleming.ai/v1/realtime`). The
+  coturn server at `turn.fleming.ai` (UDP 3478/5349 + relay range
+  49152-65535) is used for the WebRTC media path (ICE checks, DTLS, RTP,
+  SCTP).
+- TURN credentials are long-term (`lt-cred-mech` style): username + password
+  plus a per-allocation nonce/realm. They come from `privateConfig.json`
+  (gitignored) via `CMakeLists.txt`; without them the client silently skips
+  the TURN allocation and uses only host/STUN candidates.
+- Vendored libpeer (`deps/libpeer`) is patched to be a functional TURN UDP
+  client: it allocates a relay, installs CreatePermission for every remote
+  candidate IP, wraps all outbound packets to relay candidates in Send
+  Indications, unwraps inbound Data Indications, and refreshes the allocation
+  + permissions every 5 minutes from the peer loop. These are deliberate
+  local deltas — see `deps/libpeer/src/agent.c` (`agent_turn_*`) and
+  `stun.c` (`stun_msg_parse_data_indication`).
+- Do not "simplify" the TURN path back to plain `agent_socket_send`: a remote
+  relay candidate is only reachable through our allocation, and raw binding
+  requests to the relayed address get 401 from coturn (upstream libpeer
+  issue #215).
+- Both peers must share the same TURN server for relay-to-relay media. The
+  aiortc speech server needs `iceServers` with the same turn URL/credentials;
+  the client alone is not enough when both sides are behind NAT.
+- Limitations: UDP only (no `turns:`/TLS, no TCP, no ChannelData/ChannelBind,
+  no STUN binding over the relay for ice-lite fallback). Opus frames and SCTP
+  packets fit well under the 1300-byte MTU.
+
 ## Security and Secrets
 
 - Device mode reads API key from NVS (`wifi_config`).

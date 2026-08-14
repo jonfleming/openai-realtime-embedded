@@ -3,6 +3,7 @@
 #include <esp_event.h>
 #include <esp_log.h>
 #include <peer.h>
+#include <esp_sntp.h>
 
 #ifndef LINUX_BUILD
 #include "nvs_flash.h"
@@ -23,6 +24,14 @@
 
 static const char *TAG = "Main";
 
+void initialize_sntp(void) {
+    ESP_LOGI(TAG, "Initializing SNTP");
+    esp_sntp_config_t config = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    config.start = true; // Start SNTP service
+    esp_netif_sntp_init(&config);
+    ESP_LOGI(TAG, "SNTP initialized");
+}
+
 extern "C" void app_main(void) {
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
@@ -33,6 +42,9 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(ret);
 
   ESP_ERROR_CHECK(esp_event_loop_create_default());
+  
+  // Initialize SNTP for TLS certificate time validation
+  initialize_sntp();
   
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
   // Initialize AIPI-Lite specific hardware (power, audio, buttons)

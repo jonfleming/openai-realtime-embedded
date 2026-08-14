@@ -1,6 +1,7 @@
 #include <esp_http_client.h>
 #include <esp_log.h>
 #include <string.h>
+#include <esp_crt_bundle.h>
 
 #include "main.h"
 
@@ -79,11 +80,17 @@ void oai_http_request(char *offer, char *answer) {
   memset(&config, 0, sizeof(esp_http_client_config_t));
 
   config.url = OPENAI_REALTIMEAPI "/calls";
-   config.timeout_ms = 10000;
+  config.timeout_ms = 30000;  // 30 second timeout for slower networks
   config.event_handler = oai_http_event_handler;
   config.user_data = answer;
   config.buffer_size = MAX_HTTP_OUTPUT_BUFFER;
 
+  // TLS configuration: use ESP-IDF certificate bundle for server verification
+  // This requires CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y (enabled in sdkconfig.defaults)
+  config.crt_bundle_attach = esp_crt_bundle_attach;
+
+  // Skip common name check as fallback (already enabled via CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY)
+  config.skip_cert_common_name_check = true;
 
 #ifndef LINUX_BUILD
   wifi_config_data_t nvs_config = {0}; 

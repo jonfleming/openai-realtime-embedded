@@ -179,8 +179,9 @@ dirs, `-D SDKCONFIG=<build_dir>/sdkconfig` so each board gets a clean config):
   USB-Serial-JTAG, no strap/download-mode dance like the 1.8).
 - **No RST button** (PWR + BOOT only) — if the chip ever sticks in ROM
   download mode, recover with `python/s3_recover.py COMx` (esptool's
-  `--after watchdog-reset`, tracked in the repo; a PWR double-press is the
-  physical power-cycle equivalent). Same as the 1.8.
+  `--after watchdog-reset`, tracked in the repo). Physical equivalent: PWR
+  long-press (6+ s) powers off via the PMU, short press powers back on
+  (default hardware behavior, no code needed). Same as the 1.8.
 
 ## 9. Validation checklist (hardware bring-up, in order)
 
