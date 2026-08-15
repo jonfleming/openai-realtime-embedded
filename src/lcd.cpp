@@ -395,18 +395,33 @@ esp_err_t init_lvgl(void)
             .swap_bytes = true,
         },
     };
-    // NOTE: use lvgl_port_add_disp() (not lvgl_port_add_disp_rgb()) here: this is
-    // a QSPI/SPI panel, and the *_rgb variant sets the display type to RGB. In
-    // that mode esp_lvgl_port's flush callback calls lv_disp_flush_ready()
-    // immediately after queueing the (async) SPI transaction, so LVGL reuses the
-    // single draw buffer while the SPI DMA is still reading it. The DMA then
-    // captures a mix of two adjacent 20-row chunks, leaving a corrupted
-    // horizontal strip at each buffer boundary -- visible as a white line
-    // through text/buttons (white on white is invisible on the container). The
-    // plain variant registers the SPI on_color_trans_done callback and only
-    // signals flush ready once the transfer has finished, matching the proven
-    // AIPI-Lite/Freenove path below.
+    // NOTE on display registration (board-specific):
+    //  1.8 (SH8601): use lvgl_port_add_disp(). The *_rgb variant marks the
+    //     display as RGB, so esp_lvgl_port's flush callback calls
+    //     lv_disp_flush_ready() immediately after queueing the (async) SPI
+    //     transaction; LVGL then reuses the single draw buffer while the DMA
+    //     is still reading it, leaving a corrupted horizontal strip at each
+    //     buffer boundary -- the white line through text/buttons (white on
+    //     white is invisible on the container). The plain variant registers
+    //     the SPI on_color_trans_done callback and only signals flush ready
+    //     once the transfer has finished, matching the proven AIPI-Lite/
+    //     Freenove path below.
+    //  2.06 (CO5300): the plain variant deadlocks at boot -- the LVGL render
+    //     task stalls waiting on a flush that never completes, so lvgl_ui()'s
+    //     bsp_display_lock(0) never returns. Revert to
+    //     lvgl_port_add_disp_rgb() (what the 2.06 BSP's own
+    //     bsp_display_lcd_init() uses), which restores boot.
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+    const lvgl_port_display_rgb_cfg_t rgb_cfg = {
+        .flags = {
+            .bb_mode = false,
+            .avoid_tearing = false,
+        },
+    };
+    disp_handle = lvgl_port_add_disp_rgb(&disp_cfg, &rgb_cfg);
+#else
     disp_handle = lvgl_port_add_disp(&disp_cfg);
+#endif
     if (disp_handle == NULL) {
         ESP_LOGE(TAG, "lvgl_port_add_disp failed");
         return ESP_FAIL;

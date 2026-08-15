@@ -21,10 +21,12 @@ It captures the non-obvious integration details and regression guardrails for:
 
 ## Board Selection
 
-This project supports four board profiles selected at configure/build time
-(precedence Waveshare 2.06 > Waveshare 1.8 > AIPI-Lite > Freenove):
+This project supports four board profiles selected at configure/build time.
+**The default is Waveshare ESP32-S3 Touch AMOLED 1.8 inch (no flag needed).**
 
-- Waveshare ESP32-S3 Touch AMOLED 1.8 (default): `WAVESHARE_AMOLED_1_8_BOARD=ON`
+Precedence: **Waveshare 2.06 > Waveshare 1.8 > AIPI-Lite > Freenove**:
+
+- Waveshare ESP32-S3 Touch AMOLED 1.8 (**default**, no flag): `idf.py build`
 - Waveshare ESP32-S3 Touch AMOLED 2.06: `-DWAVESHARE_AMOLED_2_06_BOARD=ON`
 - AIPI-Lite: `-DAIPI_LITE_BOARD=ON` (with `WAVESHARE_AMOLED_1_8_BOARD=OFF`)
 - Freenove Media Kit: `-DAIPI_LITE_BOARD=OFF -DWAVESHARE_AMOLED_1_8_BOARD=OFF`

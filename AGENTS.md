@@ -20,11 +20,12 @@ This file captures the non-obvious implementation details that made the Freenove
   - `components/peer/CMakeLists.txt`
   - `deps/libpeer/src/config.h`
 
-## Board Selection
+# Board Selection
 
-Board is chosen by CMake options in `CMakeLists.txt` (mutually exclusive; Waveshare 1.8 is the default `ON`, precedence Waveshare 2.06 > 1.8 > AIPI-Lite > Freenove):
+Board is chosen by CMake options in `CMakeLists.txt` (mutually exclusive; **Waveshare 1.8 is the default**):
+
 - `-DWAVESHARE_AMOLED_2_06_BOARD=ON`: Waveshare ESP32-S3 Touch AMOLED 2.06 (watch) — overlays `sdkconfig.waveshare_amoled_2_06` (32 MB QIO flash etc.)
-- `-DWAVESHARE_AMOLED_1_8_BOARD=ON` (default): Waveshare ESP32-S3 Touch AMOLED 1.8 — overlays `sdkconfig.waveshare_amoled_1_8`
+- `-DWAVESHARE_AMOLED_1_8_BOARD=ON` (**default**, no flag needed): Waveshare ESP32-S3 Touch AMOLED 1.8 — overlays `sdkconfig.waveshare_amoled_1_8`
 - `-DAIPI_LITE_BOARD=ON` (with `WAVESHARE_AMOLED_1_8_BOARD=OFF`): AIPI-Lite (stripped-down, cheaper variant)
 - Both `OFF` (`-DWAVESHARE_AMOLED_1_8_BOARD=OFF -DAIPI_LITE_BOARD=OFF`): Freenove Media Kit (full-featured)
 
@@ -208,8 +209,8 @@ When the device is in an active conversation with the speech-to-speech backend, 
 |-------|---------------------|
 | Freenove Media Kit | GPIO19 (left button) |
 | AIPI-Lite | GPIO1 (left button, also power button) |
-| Waveshare 1.8 | GPIO42 (right button) |
-| Waveshare 2.06 | GPIO42 (right button) |
+| Waveshare 1.8 | GPIO0 (BOOT button; no other readable button) |
+| Waveshare 2.06 | GPIO0 (BOOT button; no other readable button) |
 
 ### Implementation Details
 

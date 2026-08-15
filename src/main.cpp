@@ -23,12 +23,25 @@
 
 static const char *TAG = "Main";
 
+// Log the board configuration at startup
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+static const char *BOARD_TAG = "Waveshare 2.06";
+#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+static const char *BOARD_TAG = "Waveshare 1.8";
+#elif defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+static const char *BOARD_TAG = "AIPI-Lite";
+#else
+static const char *BOARD_TAG = "Freenove Media Kit";
+#endif
+
 // Interrupt state - protected by FreeRTOS task notifications or atomic ops
 static bool s_interrupted = false;
 
-// Waveshare 1.8 uses a polling task for the interrupt button since BSP buttons aren't directly accessible
+// Waveshare 1.8/2.06 only expose PWR (AXP2101 PMU) and BOOT (GPIO0) buttons;
+// there is no GPIO42 "right button" on these boards. BOOT is the only button
+// wired to a readable GPIO, so it's the interrupt button.
 #if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
-#define INTERRUPT_BUTTON_PIN 0  // Boot button on GPIO0 (same as 2.06)
+#define INTERRUPT_BUTTON_PIN 0  // BOOT button on GPIO0
 #else
 // Freenove Media Kit: Left button on GPIO19
 #define INTERRUPT_BUTTON_PIN 19
@@ -130,18 +143,19 @@ void oai_init_interrupt_button(void) {
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     
     if (gpio_config(&io_conf) == ESP_OK) {
-        gpio_install_isr_service(0);
+        gpio_install_isr_service(0);  // AIPI-Lite needs its own ISR service
         gpio_isr_handler_add((gpio_num_t)LEFT_BUTTON_PIN, aipi_lite_interrupt_handler, NULL);
         ESP_LOGI(TAG, "Interrupt button initialized (GPIO %d)", LEFT_BUTTON_PIN);
     } else {
         ESP_LOGE(TAG, "Failed to configure interrupt button");
     }
 #elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
-    // Waveshare 1.8: Use polling task for the right button (GPIO42)
+    // Waveshare 1.8: poll the BOOT button (GPIO0) from a task
     xTaskCreate(waveshare_1_8_interrupt_poll_task, "waveshare_int_poll", 
                 4096, NULL, 5, NULL);
 #elif defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
-    // Waveshare 2.06: GPIO0 (boot button) as interrupt button
+    // Waveshare 2.06: BOOT button (GPIO0) as interrupt button (the only
+    // readable button; PWR goes to the AXP2101 PMU).
     gpio_config_t io_conf = {};
     io_conf.intr_type = GPIO_INTR_NEGEDGE;
     io_conf.mode = GPIO_MODE_INPUT;
@@ -150,9 +164,9 @@ void oai_init_interrupt_button(void) {
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     
     if (gpio_config(&io_conf) == ESP_OK) {
-        gpio_install_isr_service(0);
+        gpio_install_isr_service(0);  // the 2.06 BSP does not install one
         gpio_isr_handler_add((gpio_num_t)0, waveshare_2_06_interrupt_handler, NULL);
-        ESP_LOGI(TAG, "Interrupt button initialized (Waveshare 2.06 GPIO %d)", 0);
+        ESP_LOGI(TAG, "Interrupt button initialized (%s GPIO %d)", BOARD_TAG, 0);
     } else {
         ESP_LOGE(TAG, "Failed to configure interrupt button");
     }
@@ -166,7 +180,7 @@ void oai_init_interrupt_button(void) {
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     
     if (gpio_config(&io_conf) == ESP_OK) {
-        gpio_install_isr_service(0);
+        gpio_install_isr_service(0);  // Freenove needs its own ISR service
         gpio_isr_handler_add((gpio_num_t)19, freenove_waveshare_2_06_interrupt_handler, NULL);
         ESP_LOGI(TAG, "Interrupt button initialized (Freenove GPIO %d)", 19);
     } else {
@@ -197,6 +211,8 @@ extern "C" void app_main(void) {
   ESP_ERROR_CHECK(ret);
 
   ESP_ERROR_CHECK(esp_event_loop_create_default());
+  
+  ESP_LOGI(TAG, "Starting %s build", BOARD_TAG);
   
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
   // Initialize AIPI-Lite specific hardware (power, audio, buttons)

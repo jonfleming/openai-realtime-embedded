@@ -34,10 +34,10 @@ if(IDF_TARGET STREQUAL linux)
 endif()
 
 
-# Board support (mutually exclusive, precedence Waveshare 2.06 > Waveshare 1.8 >
-# AIPI-Lite > Freenove):
+# Board support (mutually exclusive, precedence Waveshare 2.06 > Freenove >
+# AIPI-Lite; **Waveshare 1.8 is the default**):
 #   -DWAVESHARE_AMOLED_2_06_BOARD=ON -> Waveshare ESP32-S3 Touch AMOLED 2.06 (watch)
-#   -DWAVESHARE_AMOLED_1_8_BOARD=ON  -> Waveshare ESP32-S3 Touch AMOLED 1.8 (default)
+#   -DWAVESHARE_AMOLED_1_8_BOARD=ON  -> Waveshare ESP32-S3 Touch AMOLED 1.8 (default, no flag needed)
 #   -DAIPI_LITE_BOARD=ON             -> AIPI-Lite
 #   -DAIPI_LITE_BOARD=OFF            -> Freenove Media Kit
 #
@@ -45,8 +45,8 @@ endif()
 # bsp_* symbols, so exactly one must be linked per build. The active BSP is
 # chosen in src/idf_component.yml via the FREEBUFF_BOARD environment variable
 # (set below, before project() runs the component manager).
-option(WAVESHARE_AMOLED_2_06_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 2.06" ON)
-option(WAVESHARE_AMOLED_1_8_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 1.8" OFF)
+option(WAVESHARE_AMOLED_2_06_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 2.06" OFF)
+option(WAVESHARE_AMOLED_1_8_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 1.8" ON)
 option(AIPI_LITE_BOARD "Build for AIPI-Lite board" OFF)
 if(WAVESHARE_AMOLED_2_06_BOARD)
   add_compile_definitions(WAVESHARE_AMOLED_2_06_BOARD=1)
