@@ -663,3 +663,23 @@ void oai_send_audio(PeerConnection *peer_connection) {
 
   vTaskDelay(pdMS_TO_TICKS(1));
 }
+
+// Stop audio playback - called when interrupt button is pressed
+void oai_stop_audio_playback(void) {
+#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
+    // For Waveshare boards using BSP codec devices - close the codec device
+    if (s_spk_codec_dev != NULL) {
+        esp_codec_dev_close(s_spk_codec_dev);
+        ESP_LOGI("Media", "Audio playback stopped (BSP codec)");
+    }
+#else
+    // For other boards - disable I2S TX channel briefly to stop audio
+    if (s_i2s_tx_chan != NULL) {
+        i2s_channel_disable(s_i2s_tx_chan);
+        vTaskDelay(pdMS_TO_TICKS(10)); // Brief delay to stop audio
+        i2s_channel_enable(s_i2s_tx_chan);
+        ESP_LOGI("Media", "Audio playback stopped (I2S TX)");
+    }
+#endif
+}
+

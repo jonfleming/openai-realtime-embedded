@@ -26,6 +26,14 @@ static const char *TAG = "Main";
 // Interrupt state - protected by FreeRTOS task notifications or atomic ops
 static bool s_interrupted = false;
 
+// Waveshare 1.8 uses a polling task for the interrupt button since BSP buttons aren't directly accessible
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#define INTERRUPT_BUTTON_PIN 0  // Boot button on GPIO0 (same as 2.06)
+#else
+// Freenove Media Kit: Left button on GPIO19
+#define INTERRUPT_BUTTON_PIN 19
+#endif
+
 // Button interrupt handler - called when interrupt button is pressed
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
 static void IRAM_ATTR aipi_lite_interrupt_handler(void* arg) {
@@ -39,21 +47,7 @@ static void IRAM_ATTR aipi_lite_interrupt_handler(void* arg) {
         oai_stop_audio_playback();
     }
 }
-#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
-// Waveshare 1.8 uses BSP-managed buttons; we'll check button state from a task
-static void IRAM_ATTR waveshare_1_8_interrupt_handler(void* arg) {
-    bool was_interrupted = s_interrupted;
-    s_interrupted = !was_interrupted; // Toggle state
-    
-    ESP_LOGI(TAG, "Interrupt button pressed: %s", 
-             s_interrupted ? "INTERRUPTION START" : "NORMAL MODE");
-    
-    if (s_interrupted) {
-        oai_stop_audio_playback();
-    }
-}
 #elif defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
-// Waveshare 2.06 uses BSP-managed buttons; we'll check button state from a task
 static void IRAM_ATTR waveshare_2_06_interrupt_handler(void* arg) {
     bool was_interrupted = s_interrupted;
     s_interrupted = !was_interrupted; // Toggle state
@@ -66,8 +60,8 @@ static void IRAM_ATTR waveshare_2_06_interrupt_handler(void* arg) {
     }
 }
 #else
-// Freenove Media Kit
-static void IRAM_ATTR freenove_interrupt_handler(void* arg) {
+// Freenove Media Kit and Waveshare 1.8 use polling task instead of interrupt
+static void IRAM_ATTR freenove_waveshare_2_06_interrupt_handler(void* arg) {
     bool was_interrupted = s_interrupted;
     s_interrupted = !was_interrupted; // Toggle state
     
@@ -80,8 +74,52 @@ static void IRAM_ATTR freenove_interrupt_handler(void* arg) {
 }
 #endif
 
+// Waveshare 1.8 polling task - checks button state periodically
+#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+static void waveshare_1_8_interrupt_poll_task(void *pvParameters) {
+    vTaskDelay(pdMS_TO_TICKS(500)); // Wait for system to stabilize
+    
+    gpio_config_t io_conf = {};
+    io_conf.intr_type = GPIO_INTR_DISABLE;  // No interrupts, just polling
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pin_bit_mask = (1ULL << INTERRUPT_BUTTON_PIN);
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    
+    if (gpio_config(&io_conf) == ESP_OK) {
+        ESP_LOGI(TAG, "Interrupt button polling started (GPIO %d)", INTERRUPT_BUTTON_PIN);
+        
+        bool last_state = gpio_get_level((gpio_num_t)INTERRUPT_BUTTON_PIN);
+        
+        while (1) {
+            vTaskDelay(pdMS_TO_TICKS(50)); // Poll every 50ms
+            
+            bool current_state = gpio_get_level((gpio_num_t)INTERRUPT_BUTTON_PIN);
+            
+            // Negative edge trigger (button press = LOW)
+            if (last_state == 1 && current_state == 0) {
+                bool was_interrupted = s_interrupted;
+                s_interrupted = !was_interrupted; // Toggle state
+                
+                ESP_LOGI(TAG, "Interrupt button pressed: %s", 
+                         s_interrupted ? "INTERRUPTION START" : "NORMAL MODE");
+                
+                if (s_interrupted) {
+                    oai_stop_audio_playback();
+                }
+            }
+            
+            last_state = current_state;
+        }
+    } else {
+        ESP_LOGE(TAG, "Failed to configure interrupt button polling");
+    }
+    
+    vTaskDelete(NULL);
+}
+#endif
+
 void oai_init_interrupt_button(void) {
-    ESP_LOGI(TAG, "Initializing interrupt button...");
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
     // Left button (GPIO1) is the interrupt button on AIPI-Lite
     gpio_config_t io_conf = {};
@@ -99,36 +137,22 @@ void oai_init_interrupt_button(void) {
         ESP_LOGE(TAG, "Failed to configure interrupt button");
     }
 #elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
-    // Waveshare 1.8: BSP manages buttons; check BSP documentation for button pin
-    // For now, we'll use GPIO0 (boot button) as interrupt button
-    gpio_config_t io_conf = {};
-    io_conf.intr_type = GPIO_INTR_NEGEDGE;
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pin_bit_mask = (1ULL << 0); // Boot button on GPIO0
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    
-    if (gpio_config(&io_conf) == ESP_OK) {
-        gpio_install_isr_service(0);
-        gpio_isr_handler_add((gpio_num_t)0, waveshare_1_8_interrupt_handler, NULL);
-        ESP_LOGI(TAG, "Interrupt button initialized (Waveshare 1.8 GPIO %d)", 42);
-    } else {
-        ESP_LOGE(TAG, "Failed to configure interrupt button");
-    }
+    // Waveshare 1.8: Use polling task for the right button (GPIO42)
+    xTaskCreate(waveshare_1_8_interrupt_poll_task, "waveshare_int_poll", 
+                4096, NULL, 5, NULL);
 #elif defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
-    // Waveshare 2.06: BSP manages buttons; check BSP documentation for button pin
-    // Using GPIO42 (right button) as interrupt button
+    // Waveshare 2.06: GPIO0 (boot button) as interrupt button
     gpio_config_t io_conf = {};
     io_conf.intr_type = GPIO_INTR_NEGEDGE;
     io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pin_bit_mask = (1ULL << 42);
+    io_conf.pin_bit_mask = (1ULL << 0);
     io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
     
     if (gpio_config(&io_conf) == ESP_OK) {
         gpio_install_isr_service(0);
-        gpio_isr_handler_add((gpio_num_t)42, waveshare_2_06_interrupt_handler, NULL);
-        ESP_LOGI(TAG, "Interrupt button initialized (Waveshare 2.06 GPIO %d)", 42);
+        gpio_isr_handler_add((gpio_num_t)0, waveshare_2_06_interrupt_handler, NULL);
+        ESP_LOGI(TAG, "Interrupt button initialized (Waveshare 2.06 GPIO %d)", 0);
     } else {
         ESP_LOGE(TAG, "Failed to configure interrupt button");
     }
@@ -143,7 +167,7 @@ void oai_init_interrupt_button(void) {
     
     if (gpio_config(&io_conf) == ESP_OK) {
         gpio_install_isr_service(0);
-        gpio_isr_handler_add((gpio_num_t)19, freenove_interrupt_handler, NULL);
+        gpio_isr_handler_add((gpio_num_t)19, freenove_waveshare_2_06_interrupt_handler, NULL);
         ESP_LOGI(TAG, "Interrupt button initialized (Freenove GPIO %d)", 19);
     } else {
         ESP_LOGE(TAG, "Failed to configure interrupt button");
@@ -161,32 +185,7 @@ void oai_set_interrupted(bool interrupted) {
 }
 
 // Stop audio playback (speaker)
-void oai_stop_audio_playback(void) {
-#ifndef LINUX_BUILD
-#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
-    // For Waveshare boards using BSP codec devices - close the codec device
-    extern void* s_spk_codec_dev;
-    if (s_spk_codec_dev != NULL) {
-        extern esp_err_t esp_codec_dev_close(void*);
-        esp_codec_dev_close(s_spk_codec_dev);
-        ESP_LOGI(TAG, "Audio playback stopped (BSP codec)");
-    }
-#else
-    // For other boards - disable I2S TX channel briefly to stop audio
-    extern void* s_i2s_tx_chan;
-    if (s_i2s_tx_chan != NULL) {
-        extern esp_err_t i2s_channel_disable(void*);
-        extern esp_err_t i2s_channel_enable(void*);
-        i2s_channel_disable(s_i2s_tx_chan);
-        vTaskDelay(pdMS_TO_TICKS(10)); // Brief delay to stop audio
-        i2s_channel_enable(s_i2s_tx_chan);
-        ESP_LOGI(TAG, "Audio playback stopped (I2S TX)");
-    }
-#endif
-#else
-    ESP_LOGI(TAG, "Audio playback stop (Linux mode - no-op)");
-#endif
-}
+extern void oai_stop_audio_playback(void);
 
 extern "C" void app_main(void) {
   esp_err_t ret = nvs_flash_init();

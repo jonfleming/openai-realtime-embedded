@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.19)
 
+# This project only targets the ESP32-S3, but the IDF default target is esp32.
+# Normally the target is picked up from an existing sdkconfig; a fresh build
+# dir (or a deleted sdkconfig) would silently fall back to esp32 and make the
+# component manager discard every board BSP (all esp32s3-only) with a confusing
+# "no versions match" solve error. Pin the target here, guarded so an explicit
+# IDF_TARGET (e.g. "linux" for the Linux build below) still wins.
+if(NOT DEFINED IDF_TARGET)
+  set(IDF_TARGET esp32s3)
+endif()
+
 if(IDF_TARGET STREQUAL linux)
   file(READ privateConfig.json PV_CFG)
   string(JSON PV_WIFI_SSID GET "${PV_CFG}" wifi_ssid)
@@ -35,8 +45,8 @@ endif()
 # bsp_* symbols, so exactly one must be linked per build. The active BSP is
 # chosen in src/idf_component.yml via the FREEBUFF_BOARD environment variable
 # (set below, before project() runs the component manager).
-option(WAVESHARE_AMOLED_2_06_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 2.06" OFF)
-option(WAVESHARE_AMOLED_1_8_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 1.8" ON)
+option(WAVESHARE_AMOLED_2_06_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 2.06" ON)
+option(WAVESHARE_AMOLED_1_8_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 1.8" OFF)
 option(AIPI_LITE_BOARD "Build for AIPI-Lite board" OFF)
 if(WAVESHARE_AMOLED_2_06_BOARD)
   add_compile_definitions(WAVESHARE_AMOLED_2_06_BOARD=1)

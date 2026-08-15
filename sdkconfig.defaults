@@ -2,10 +2,13 @@
 CONFIG_ESP_EVENT_POST_FROM_ISR=n
 CONFIG_ESP_EVENT_POST_FROM_IRAM_ISR=n
 
-# Disable TLS verification
-# Production needs to include specific cert chain you care about
-CONFIG_ESP_TLS_INSECURE=y
-CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+# TLS verification: full verification against the ESP-IDF cert bundle
+# (speech.fleming.ai uses a public Let's Encrypt cert; ISRG Root X2 is in the
+# bundle). Do NOT set CONFIG_ESP_TLS_INSECURE / CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY:
+# with them enabled, esp-tls disables SNI, and speech.fleming.ai rejects
+# SNI-less handshakes with a fatal alert (mbedtls -0x7780 / TLS internal error).
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 
 # Enable DTLS-SRTP
 CONFIG_MBEDTLS_SSL_PROTO_DTLS=y

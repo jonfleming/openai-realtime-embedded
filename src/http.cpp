@@ -85,12 +85,12 @@ void oai_http_request(char *offer, char *answer) {
   config.user_data = answer;
   config.buffer_size = MAX_HTTP_OUTPUT_BUFFER;
 
-  // TLS configuration: use ESP-IDF certificate bundle for server verification
-  // This requires CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y (enabled in sdkconfig.defaults)
+  // TLS configuration: use ESP-IDF certificate bundle for server verification.
+  // This requires CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y (enabled in sdkconfig.defaults).
+  // NOTE: do NOT set config.skip_cert_common_name_check = true here — in IDF 5.5
+  // that disables SNI entirely (not just the CN check), and speech.fleming.ai
+  // rejects SNI-less handshakes with a fatal alert (mbedtls -0x7780).
   config.crt_bundle_attach = esp_crt_bundle_attach;
-
-  // Skip common name check as fallback (already enabled via CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY)
-  config.skip_cert_common_name_check = true;
 
 #ifndef LINUX_BUILD
   wifi_config_data_t nvs_config = {0}; 

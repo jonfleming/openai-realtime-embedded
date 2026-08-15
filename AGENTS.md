@@ -30,6 +30,12 @@ Board is chosen by CMake options in `CMakeLists.txt` (mutually exclusive; Wavesh
 
 For the default Waveshare 1.8 build no flag is needed: plain `idf.py build` is correct.
 
+`CMakeLists.txt` pins `IDF_TARGET` to `esp32s3` (guarded by `if(NOT DEFINED IDF_TARGET)`
+so `IDF_TARGET=linux` still selects the Linux build). Do NOT remove this: the IDF
+default target is `esp32`, and with a fresh build dir / deleted `sdkconfig` the
+component manager silently filters out every board BSP (all esp32s3-only) and
+fails version solving with a confusing "no versions match ^1.1.4" error.
+
 ### Exactly one Waveshare BSP per build (important)
 
 The 1.8 and 2.06 boards use different managed BSPs (`waveshare/esp32_s3_touch_amoled_1_8`
@@ -303,6 +309,11 @@ Preserve and document any local deltas. Especially keep:
 - Linux mode reads key via compile definitions from `privateConfig.json`.
 - Do not commit real keys.
 - `src/http.cpp` currently logs bearer token. Remove or gate this log before production release.
+- TLS: `sdkconfig.defaults` enables the full ESP-IDF cert bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y`).
+  Do NOT enable `CONFIG_ESP_TLS_INSECURE` / `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`, and do NOT set
+  `config.skip_cert_common_name_check = true` in `oai_http_request()`: in IDF 5.5 that disables SNI
+  entirely, and `speech.fleming.ai` rejects SNI-less handshakes with a fatal alert
+  (`mbedtls_ssl_handshake returned -0x7780`, ESP_ERR_HTTP_CONNECT).
 
 ## Validation Checklist After Changes
 
