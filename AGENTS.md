@@ -136,8 +136,10 @@ Per-board backends (compile-time selected in `src/battery.cpp`):
   (E-Gauge fuel gauge), reg 0x30 bit 0 (battery-voltage ADC), reg 0x68 bit 0
   (battery detect) with read-modify-write. Percent comes from reg 0xA4 (fuel
   gauge, 0-100), with a voltage→percent fallback from reg 0x34/0x35 (13-bit,
-  1 mV/LSB). Reg 0x00 bit 3 (battery present) gates the display — USB-only
-  power hides the bar.
+  1 mV/LSB). Presence is NOT gated on reg 0x00 bit 3 — that bit reads
+  unreliably on the 2.06. Detect presence from the battery-voltage ADC
+  (reg 0x34/0x35) instead: a real LiPo reads ~2.0-4.5 V while a USB-only
+  board reads ~0 V; <2 V or >4.5 V returns -1 and hides the bar.
 
 ## AIPI-Lite Audio (ES8311 codec)
 

@@ -71,7 +71,9 @@ why it mattered, what symptom it fixed.
   GPIO2 ADC1_CH1 with the xiaozhi-esp32 raw table
   `{1480,0},{1581,20},{1663,40},{1750,60},{1840,80},{1980,100}`; Waveshare =
   AXP2101 at 0x34 on the BSP I2C bus, percent reg 0xA4 (fuel gauge),
-  voltage fallback reg 0x34/0x35, battery-present gate reg 0x00 bit 3.
+  voltage fallback reg 0x34/0x35. Presence is detected from the battery
+  voltage ADC (reg 0x34/0x35, ~2.0-4.5 V), NOT status1 reg 0x00 bit 3
+  (unreliable on the 2.06).
 - **Why it mattered:** all four boards have battery hardware but nothing
   displayed charge; Freenove's GPIO20 is the tricky one (LCD reset + divider
   on one pin, per the official FNK0102 docs).

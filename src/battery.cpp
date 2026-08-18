@@ -99,6 +99,18 @@ static int axp_voltage_to_percent(int mv)
     return 0;
 }
 
+// Read the battery voltage ADC (reg 0x34/0x35, 13-bit, 1 mV/LSB). Returns the
+// voltage in mV or -1 on an I2C error.
+static int axp_read_bat_mv(void)
+{
+    uint8_t hi = 0, lo = 0;
+    if (axp_read_reg(AXP2101_BAT_ADC_H, &hi) != ESP_OK ||
+        axp_read_reg(AXP2101_BAT_ADC_L, &lo) != ESP_OK) {
+        return -1;
+    }
+    return ((hi & 0x1F) << 8) | lo;
+}
+
 esp_err_t oai_battery_init(void)
 {
     s_i2c = bsp_i2c_get_handle();
@@ -108,7 +120,8 @@ esp_err_t oai_battery_init(void)
     }
 
     // Register the AXP2101 as a device on the BSP-owned bus. The 1.8 board's
-    // bus runs at 100 kHz (CONFIG_BSP_I2C_FAST_MODE=n); keep that speed.
+    // bus runs at 100 kHz (CONFIG_BSP_I2C_FAST_MODE=n); the 2.06 board runs
+    // 400 kHz. Either way a conservative 100 kHz device speed is valid.
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = AXP2101_I2C_ADDR,
@@ -127,7 +140,16 @@ esp_err_t oai_battery_init(void)
     s_axp_ok = (err == ESP_OK);
 
     if (s_axp_ok) {
-        ESP_LOGI(TAG, "AXP2101 battery monitor ready (I2C 0x%02X)", AXP2101_I2C_ADDR);
+        // One-shot diagnostic: surface the raw PMU state at boot so a "battery
+        // not showing" report can be triaged from the serial log without a
+        // rebuild (status1, fuel-gauge %, battery mV).
+        uint8_t status1 = 0, pct = 0;
+        int mv = axp_read_bat_mv();
+        axp_read_reg(AXP2101_STATUS1, &status1);
+        axp_read_reg(AXP2101_BAT_PERCENT, &pct);
+        ESP_LOGI(TAG, "AXP2101 battery monitor ready (I2C 0x%02X); status1=0x%02X "
+                 "batt_present=%d fuel=%d%% batt_mv=%d",
+                 AXP2101_I2C_ADDR, status1, (status1 >> 3) & 1, pct, mv);
     } else {
         ESP_LOGW(TAG, "AXP2101 config failed (0x%X); battery monitoring disabled", err);
     }
@@ -140,29 +162,23 @@ int oai_battery_get_percent(void)
         return -1;
     }
 
-    // Battery present? (reg 0x00 bit 3). Without a battery the fuel gauge
-    // reads are meaningless, so report "no battery" and hide the indicator.
-    uint8_t status1 = 0;
-    if (axp_read_reg(AXP2101_STATUS1, &status1) != ESP_OK) {
-        return -1;
-    }
-    if (!(status1 & 0x08)) {
-        return -1;
-    }
-
-    // Preferred: the AXP2101 E-Gauge percentage (voltage-based, 0..100).
+    // Preferred: the AXP2101 E-Gauge percentage (reg 0xA4). On the 2.06 this
+    // is what the stock/xiaozhi firmware reads directly; it can briefly read
+    // 0 on a fresh battery before the gauge has learned the curve.
     uint8_t pct = 0;
     if (axp_read_reg(AXP2101_BAT_PERCENT, &pct) == ESP_OK && pct > 0 && pct <= 100) {
         return pct;
     }
 
-    // Fallback: battery voltage ADC -> percent.
-    uint8_t hi = 0, lo = 0;
-    if (axp_read_reg(AXP2101_BAT_ADC_H, &hi) != ESP_OK ||
-        axp_read_reg(AXP2101_BAT_ADC_L, &lo) != ESP_OK) {
+    // Fallback: battery voltage ADC -> percent. This is also the "is a
+    // battery actually attached" test: a real LiPo reads above ~2 V while a
+    // USB-only board reads near 0 V (the AXP2101 powers off well before the
+    // cell drops to 2.6 V, so <2 V reliably means no battery). We prefer this
+    // over status1 bit 3, which the 2.06 can report inconsistently.
+    int mv = axp_read_bat_mv();
+    if (mv < 2000 || mv > 4500) {
         return -1;
     }
-    int mv = ((hi & 0x1F) << 8) | lo; // 13-bit, 1 mV/LSB
     return axp_voltage_to_percent(mv);
 }
 
