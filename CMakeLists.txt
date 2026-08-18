@@ -46,8 +46,8 @@ endif()
 # chosen in src/idf_component.yml via the FREEBUFF_BOARD environment variable
 # (set below, before project() runs the component manager).
 option(WAVESHARE_AMOLED_2_06_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 2.06" OFF)
-option(WAVESHARE_AMOLED_1_8_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 1.8" ON)
-option(AIPI_LITE_BOARD "Build for AIPI-Lite board" OFF)
+option(WAVESHARE_AMOLED_1_8_BOARD "Build for Waveshare ESP32-S3 Touch AMOLED 1.8" OFF)
+option(AIPI_LITE_BOARD "Build for AIPI-Lite board" ON)
 if(WAVESHARE_AMOLED_2_06_BOARD)
   add_compile_definitions(WAVESHARE_AMOLED_2_06_BOARD=1)
   add_compile_definitions(WAVESHARE_AMOLED_1_8_BOARD=0)

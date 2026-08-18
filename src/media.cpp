@@ -235,6 +235,11 @@ void oai_init_audio_capture() {
 #else
   i2s_chan_config_t tx_chan_cfg =
       I2S_CHANNEL_DEFAULT_CONFIG(TX_I2S_PORT, I2S_ROLE_MASTER);
+  // Send silence on TX underrun instead of re-transmitting the last DMA
+  // buffer. Without this, the interrupt button leaves the speaker buzzing for
+  // several seconds: the decoder stops writing (interrupt flag) while the
+  // DMA keeps re-sending the final 20ms frame on repeat.
+  tx_chan_cfg.auto_clear = true;
   if (i2s_new_channel(&tx_chan_cfg, &s_i2s_tx_chan, NULL) != ESP_OK) {
     ESP_LOGE("Media", "Failed to create I2S TX channel");
     return;
@@ -375,6 +380,14 @@ void oai_audio_decode(uint8_t *data, size_t size) {
       opus_decode(opus_decoder, data, size, output_buffer, SPK_BUFFER_SAMPLES, 0);
 
   if (decoded_size > 0) {
+    // Drop downlink audio while paused. The interrupt flag gates playback on
+    // boards without a codec mute (Freenove/AIPI); doing it here instead of
+    // disabling the I2S TX channel avoids racing the blocking
+    // i2s_channel_write(..., portMAX_DELAY) below, which rebooted the board
+    // on button press.
+    if (oai_is_interrupted()) {
+      return;
+    }
     size_t bytes_written = 0;
     if (s_i2s_tx_chan != NULL) {
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
@@ -664,22 +677,80 @@ void oai_send_audio(PeerConnection *peer_connection) {
   vTaskDelay(pdMS_TO_TICKS(1));
 }
 
-// Stop audio playback - called when interrupt button is pressed
+// Stop audio playback - called when interrupt button is pressed.
+// The interrupt flag (oai_is_interrupted) is what actually gates the audio:
+// oai_audio_decode() drops downlink frames and oai_send_audio() stops the mic.
+// This function only performs the board-specific mute that the flag can't do.
+// It must NOT touch the I2S channel state on Freenove/AIPI: the decoder is
+// blocked in i2s_channel_write(..., portMAX_DELAY), and disabling/re-enabling
+// the TX channel underneath it races and crashes (the reboot on button press).
 void oai_stop_audio_playback(void) {
 #if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
-    // For Waveshare boards using BSP codec devices - close the codec device
+    // Mute the speaker instead of closing the codec device. The Waveshare
+    // boards run the ES8311 DAC and ADC on ONE shared full-duplex I2S bus, so
+    // esp_codec_dev_close() disables that shared channel and the next mic read
+    // fails with "The channel is not enabled". Muting the DAC keeps the channel
+    // alive and is reversible via oai_resume_audio_playback().
     if (s_spk_codec_dev != NULL) {
-        esp_codec_dev_close(s_spk_codec_dev);
-        ESP_LOGI("Media", "Audio playback stopped (BSP codec)");
+        esp_codec_dev_set_out_mute(s_spk_codec_dev, true);
+        ESP_LOGI("Media", "Audio playback muted (BSP codec)");
     }
 #else
-    // For other boards - disable I2S TX channel briefly to stop audio
-    if (s_i2s_tx_chan != NULL) {
-        i2s_channel_disable(s_i2s_tx_chan);
-        vTaskDelay(pdMS_TO_TICKS(10)); // Brief delay to stop audio
-        i2s_channel_enable(s_i2s_tx_chan);
-        ESP_LOGI("Media", "Audio playback stopped (I2S TX)");
-    }
+    // Freenove/AIPI: playback is gated by oai_is_interrupted() in
+    // oai_audio_decode(); nothing to do here.
+    ESP_LOGI("Media", "Audio playback paused (interrupt flag)");
 #endif
 }
+
+// Resume audio playback - called when interrupt mode is exited
+void oai_resume_audio_playback(void) {
+#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
+    if (s_spk_codec_dev != NULL) {
+        esp_codec_dev_set_out_mute(s_spk_codec_dev, false);
+        ESP_LOGI("Media", "Audio playback resumed (BSP codec)");
+    }
+#else
+    ESP_LOGI("Media", "Audio playback resumed (interrupt flag)");
+#endif
+}
+
+// Freenove/AIPI only: keep the I2S TX DMA fed with silence while interrupted.
+// When oai_audio_decode() stops writing (interrupt flag), the DMA underruns
+// and re-transmits the last 20 ms frame on repeat. auto_clear does not
+// reliably prevent this on the ESP32-S3 (it only zeroes buffers that go
+// through the TX_EOF callback; a mid-write underrun can leave the DMA stuck
+// re-sending a live buffer), so the speaker buzzes until the button is
+// pressed again. Writing one zero frame per 20 ms keeps the DMA from ever
+// underrunning, which is the only guaranteed way to silence the speaker.
+//
+// The decode path (oai_audio_decode) is the only other writer to this
+// channel, and it returns early while interrupted, so this task is the sole
+// writer during interruption. i2s_channel_write serializes on the channel's
+// internal binary semaphore, so the brief overlap on enter/exit of interrupt
+// mode is safe (no channel enable/disable, which is what rebooted the board).
+#if !defined(WAVESHARE_BSP_BOARD) || !WAVESHARE_BSP_BOARD
+static void oai_silence_pump_task(void *pvParameters) {
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+    // AIPI writes 16-bit audio left-aligned in 32-bit I2S slots (same wire
+    // format as the decode path's output_buffer_32).
+    static opus_int32 silence[SPK_BUFFER_SAMPLES * SPK_CHANNELS] = {0};
+    const size_t silence_bytes = sizeof(silence);
+#else
+    static opus_int16 silence[SPK_BUFFER_SAMPLES * SPK_CHANNELS] = {0};
+    const size_t silence_bytes = sizeof(silence);
+#endif
+    while (1) {
+        if (oai_is_interrupted() && s_i2s_tx_chan != NULL) {
+            size_t written = 0;
+            i2s_channel_write(s_i2s_tx_chan, silence, silence_bytes, &written, 100);
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
+void oai_start_silence_pump(void) {
+    xTaskCreate(oai_silence_pump_task, "silence_pump", 2048, NULL, 5, NULL);
+}
+#endif
+
 

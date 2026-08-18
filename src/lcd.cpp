@@ -24,6 +24,7 @@
 #include "esp_io_expander_tca9554.h"
 #endif
 #include <esp_log.h>
+#include <string.h>
 
 #include "lcd.h"
 #include "lvgl.h"
@@ -108,6 +109,21 @@ typedef struct {
 } lvgl_screen_t;
 
 lvgl_screen_t lvgl_screen;
+
+// Persistent mode indicator ("Listening" / "Paused"), created lazily on the
+// first status update and reused thereafter so the text never accumulates as
+// a new widget the way lvgl_ui_label_set_text() does for log messages.
+static lv_obj_t *status_label = NULL;
+
+// Battery indicator (bottom of screen): a horizontal bar filled with green
+// proportional to the remaining charge, with the percentage text on top.
+// Created lazily by lvgl_ui_battery_set_percent() and hidden while no
+// battery is present. Height reserved below is the room the container leaves
+// for it.
+#define BATTERY_UI_RESERVED 36
+#define BATTERY_BAR_W_PCT   45
+#define BATTERY_BAR_H       18
+static lv_obj_t *battery_bar = NULL;
 
 // LVGL mutex access: the Waveshare BSP owns the lock on those boards
 // (bsp_display_lock() wraps lvgl_port_lock() internally); the SPI-panel
@@ -395,33 +411,19 @@ esp_err_t init_lvgl(void)
             .swap_bytes = true,
         },
     };
-    // NOTE on display registration (board-specific):
-    //  1.8 (SH8601): use lvgl_port_add_disp(). The *_rgb variant marks the
-    //     display as RGB, so esp_lvgl_port's flush callback calls
-    //     lv_disp_flush_ready() immediately after queueing the (async) SPI
-    //     transaction; LVGL then reuses the single draw buffer while the DMA
-    //     is still reading it, leaving a corrupted horizontal strip at each
-    //     buffer boundary -- the white line through text/buttons (white on
-    //     white is invisible on the container). The plain variant registers
-    //     the SPI on_color_trans_done callback and only signals flush ready
-    //     once the transfer has finished, matching the proven AIPI-Lite/
-    //     Freenove path below.
-    //  2.06 (CO5300): the plain variant deadlocks at boot -- the LVGL render
-    //     task stalls waiting on a flush that never completes, so lvgl_ui()'s
-    //     bsp_display_lock(0) never returns. Revert to
-    //     lvgl_port_add_disp_rgb() (what the 2.06 BSP's own
-    //     bsp_display_lcd_init() uses), which restores boot.
-#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
-    const lvgl_port_display_rgb_cfg_t rgb_cfg = {
-        .flags = {
-            .bb_mode = false,
-            .avoid_tearing = false,
-        },
-    };
-    disp_handle = lvgl_port_add_disp_rgb(&disp_cfg, &rgb_cfg);
-#else
+    // NOTE on display registration: both Waveshare panels (1.8 SH8601 and
+    // 2.06 CO5300) are QSPI panels driven through the same sh8601 driver, so
+    // use lvgl_port_add_disp() -- never lvgl_port_add_disp_rgb() -- here.
+    // The *_rgb variant marks the display as RGB, so esp_lvgl_port's flush
+    // callback calls lv_disp_flush_ready() immediately after queueing the
+    // (async) SPI transaction; LVGL then reuses the single draw buffer while
+    // the SPI DMA is still reading it, leaving a corrupted horizontal strip
+    // at each 20-row buffer boundary -- the white line through text/buttons
+    // (white on white is invisible on the container). The plain variant
+    // registers the SPI on_color_trans_done callback and only signals flush
+    // ready once the transfer has finished, matching the proven AIPI-Lite/
+    // Freenove path below.
     disp_handle = lvgl_port_add_disp(&disp_cfg);
-#endif
     if (disp_handle == NULL) {
         ESP_LOGE(TAG, "lvgl_port_add_disp failed");
         return ESP_FAIL;
@@ -630,9 +632,10 @@ void lvgl_ui(void)
     lvgl_screen.screen = lv_obj_create(lv_scr_act());
     lv_obj_set_size(lvgl_screen.screen, DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
-    // Create container
+    // Create container. Height leaves room at the bottom for the battery
+    // bar (BATTERY_UI_RESERVED) so the message labels never run under it.
     lvgl_screen.container = lv_obj_create(lvgl_screen.screen);
-    lv_obj_set_size(lvgl_screen.container, DISPLAY_WIDTH-10, DISPLAY_HEIGHT-10);
+    lv_obj_set_size(lvgl_screen.container, DISPLAY_WIDTH-10, DISPLAY_HEIGHT-10-BATTERY_UI_RESERVED);
     lv_obj_center(lvgl_screen.container);                                                   // Center
     // Hide the right scrollbar of the container
     lv_obj_set_style_pad_all(lvgl_screen.container, 0, LV_PART_MAIN);
@@ -641,7 +644,94 @@ void lvgl_ui(void)
     lv_obj_set_flex_flow(lvgl_screen.container, LV_FLEX_FLOW_COLUMN);                       // Vertical layout
     lv_obj_set_scroll_dir(lvgl_screen.container, LV_DIR_VER);                               // Vertical scroll
     lv_obj_set_scrollbar_mode(lvgl_screen.container, LV_SCROLLBAR_MODE_AUTO);               // Auto scroll
+    // Leave top room for the floating mode indicator ("Listening" / "Paused")
+    // so the green message labels don't run underneath it.
+    lv_obj_set_style_pad_top(lvgl_screen.container, 56, LV_PART_MAIN);
     lcd_disp_unlock(); // Unlock LVGL
+}
+
+// Show the current conversation mode at the top of the screen. The label is
+// created once and its text/color updated on each call, so it never scrolls
+// or duplicates. "Paused" is shown in red, anything else ("Listening") in
+// green. Must be called from task context (holds the LVGL lock internally).
+void lvgl_ui_status_set_text(const char *text)
+{
+    lcd_disp_lock();
+
+    if (status_label == NULL) {
+        status_label = lv_label_create(lvgl_screen.screen);
+        lv_obj_set_style_text_font(status_label, &lv_font_montserrat_32, LV_PART_MAIN);
+        lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+        lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(status_label, lv_pct(90));
+        lv_obj_align(status_label, LV_ALIGN_TOP_MID, 0, 10);
+    }
+
+    lv_label_set_text(status_label, text);
+    if (strcmp(text, "Paused") == 0) {
+        lv_obj_set_style_text_color(status_label, lv_color_hex(0xE53935), LV_PART_MAIN); // red
+    } else {
+        lv_obj_set_style_text_color(status_label, lv_color_hex(0x2E7D32), LV_PART_MAIN); // green
+    }
+
+    lcd_disp_unlock();
+}
+
+// Show (or hide) the battery indicator at the bottom of the screen. pct is
+// 0..100, or -1 to hide the widget (no battery / monitor unavailable). The
+// bar is created once and reused; the percentage label is a child of the bar
+// so hiding the bar hides both. Must be called from task context.
+void lvgl_ui_battery_set_percent(int pct)
+{
+    lcd_disp_lock();
+
+    if (lvgl_screen.screen == NULL) {
+        lcd_disp_unlock();
+        return;
+    }
+
+    if (battery_bar == NULL) {
+        battery_bar = lv_bar_create(lvgl_screen.screen);
+        lv_obj_set_size(battery_bar, lv_pct(BATTERY_BAR_W_PCT), BATTERY_BAR_H);
+        lv_bar_set_range(battery_bar, 0, 100);
+        lv_bar_set_value(battery_bar, 0, LV_ANIM_OFF);
+        lv_obj_align(battery_bar, LV_ALIGN_BOTTOM_MID, 0, -8);
+        // Track (empty part) stays light gray; the indicator is green and
+        // matches the "Listening" status color.
+        lv_obj_set_style_bg_color(battery_bar, lv_color_hex(0xDADADA), LV_PART_MAIN);
+        lv_obj_set_style_radius(battery_bar, BATTERY_BAR_H / 2, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(battery_bar, 1, LV_PART_MAIN);
+        lv_obj_set_style_bg_color(battery_bar, lv_color_hex(0x2E7D32), LV_PART_INDICATOR);
+        lv_obj_set_style_radius(battery_bar, BATTERY_BAR_H / 2 - 1, LV_PART_INDICATOR);
+
+        lv_obj_t *label = lv_label_create(battery_bar);
+        lv_obj_set_style_text_font(label, &lv_font_montserrat_14, LV_PART_MAIN);
+        lv_obj_set_style_text_color(label, lv_color_hex(0xFFFFFF), LV_PART_MAIN);
+        lv_label_set_text(label, "");
+        lv_obj_center(label);
+    }
+
+    if (pct < 0 || pct > 100) {
+        lv_obj_add_flag(battery_bar, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_clear_flag(battery_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_bar_set_value(battery_bar, pct, LV_ANIM_OFF);
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%d%%", pct);
+        lv_label_set_text(lv_obj_get_child(battery_bar, 0), buf);
+    }
+
+    lcd_disp_unlock();
+}
+
+// Remove all accumulated message labels (WiFi/SSID status, transcripts) from
+// the container. Called once a conversation has started so the setup info is
+// no longer shown.
+void lvgl_ui_clear_messages(void)
+{
+    lcd_disp_lock();
+    lv_obj_clean(lvgl_screen.container);
+    lcd_disp_unlock();
 }
 
 // Each time this function is called, create a label in the container with text content.

@@ -86,6 +86,12 @@ raw drivers (GPIO 14 is the BSP's I2C SCL; claiming it breaks touch/display).
 | Console | USB-Serial-JTAG (native USB) — `CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y` | USB-UART bridge — default UART0 console |
 | Flash | 16 MB | 32 MB (QIO) |
 
+`sdkconfig.defaults` sets `CONFIG_ESP_CONSOLE_UART_DEFAULT=y` so the Freenove,
+AIPI-Lite and 2.06 boards all log over UART0 (their USB-UART bridge); only the
+1.8 overlay overrides this to USB-Serial-JTAG. Without that explicit default, a
+build dir previously configured for the 1.8 keeps the USB-Serial-JTAG console
+setting and the Freenove/AIPI logs silently vanish from the serial monitor.
+
 The 2.06 audio path (`src/media.cpp`) mirrors the Waveshare Spec_Analyzer
 recipe: open both `esp_codec_dev` handles at 16 kHz / 16-bit / 2 channels,
 `esp_codec_dev_set_in_gain(mic, 24.0)`, speaker volume 100 (0 dB on the codec-dev curve; the Waveshare example's 60 is -20 dB and far too quiet), read 16-bit stereo
@@ -99,6 +105,39 @@ LVGL buffer convention (DMA buffer, `sw_rotate=false`, 20 rows) instead of the
 BSP defaults, which cause "Failed to allocate priv TX buffer" once
 WebRTC/TLS consume the internal heap. `max_transfer_sz` must be nonzero (the
 2.06 BSP asserts it).
+
+## Battery Monitoring
+
+Bottom-of-screen battery indicator: `src/battery.cpp` (per-board backend) +
+`lvgl_ui_battery_set_percent()` in `src/lcd.cpp` (horizontal green bar, 45 %
+screen width, bottom-mid, percentage text overlaid) polled every 5 s by
+`battery_display_task` in `main.cpp`. The widget hides when the backend
+returns -1 (no battery / monitor unavailable).
+
+Per-board backends (compile-time selected in `src/battery.cpp`):
+- **Freenove Media Kit**: GPIO20 is the **shared LCD_RST + battery-divider
+  tap**. Official formula: `battery_mV = adc_mV * 2.5 - 3300` (divider node is
+  `0.4 * VBAT + 1.32 V`; 3200-4200 mV maps linearly to 0-100 %).
+  `oai_battery_init()` must run AFTER `init_lvgl()`: it calls
+  `gpio_reset_pin(20)` to release the reset line (driven HIGH after the init
+  pulse) and reconfigures the pin as ADC (ADC2_CH9 — ADC2 works alongside
+  Wi-Fi on the S3; `adc_oneshot_read` may return ESP_ERR_TIMEOUT and is
+  retried next cycle). With a battery the divider holds the pin at 2.6-3.0 V,
+  matching the board's official firmware; on USB-only power the pin sits
+  ~1.1 V — validate the panel still renders before trusting this release.
+  Never drive GPIO20 as an output after `oai_battery_init()`: it clamps the
+  divider to 3.3 V and the battery reads 100 % forever.
+- **AIPI-Lite**: GPIO2 (ADC1_CH1, 12 dB attenuation). Raw→percent table
+  `{1480,0},{1581,20},{1663,40},{1750,60},{1840,80},{1980,100}` is the
+  xiaozhi-esp32 AIPI-Lite stock-firmware mapping; raw < 1000 → no battery.
+- **Waveshare 1.8 / 2.06**: AXP2101 PMU at 0x34 on the BSP I2C bus
+  (`bsp_i2c_get_handle()` + `i2c_master_bus_add_device`; keep the device at
+  100 kHz — the 1.8 bus runs non-fast mode). Init sets reg 0x18 bit 3
+  (E-Gauge fuel gauge), reg 0x30 bit 0 (battery-voltage ADC), reg 0x68 bit 0
+  (battery detect) with read-modify-write. Percent comes from reg 0xA4 (fuel
+  gauge, 0-100), with a voltage→percent fallback from reg 0x34/0x35 (13-bit,
+  1 mV/LSB). Reg 0x00 bit 3 (battery present) gates the display — USB-only
+  power hides the bar.
 
 ## AIPI-Lite Audio (ES8311 codec)
 
@@ -176,18 +215,27 @@ VS Code: the ESP-IDF extension is already wired up in `.vscode/settings.json` (`
 
 ### Git Bash / agent shells
 
-`source $IDF_PATH/export.sh` does **not** work here: it probes the system Python (3.14) and looks for `C:\Espressif\python_env\...`, which the installer layout doesn't create. Instead set the variables manually and call idf.py through the venv python:
+`source $IDF_PATH/export.sh` does **not** work here: it probes the system Python (3.14) and looks for `C:\Espressif\python_env\...`, which the installer layout doesn't create. **Do NOT try to set the env vars manually from Git Bash either**: MSYS2 injects `MSYSTEM=MINGW64` into every native child process (`env -u` can't strip it), and idf.py's `__main__` has a quirk where, when `MSYSTEM` is set, it prints the "MSys/Mingw is no longer supported" warning and then **never calls `main()`** — idf.py silently exits 0 doing nothing. MSYS2's path conversion also mangles `C:/...` PATH entries, so ninja/cmake resolve to the wrong (system) locations.
 
-    export IDF_PATH=C:/esp/v5.5.5/esp-idf
-    export IDF_TOOLS_PATH=C:/Espressif/tools
-    export IDF_PYTHON_ENV_PATH=C:/Espressif/tools/python/v5.5.5/venv
-    export PATH="$IDF_TOOLS_PATH/python/v5.5.5/venv/Scripts:$IDF_TOOLS_PATH/ccache/4.12.1/ccache-4.12.1-windows-x86_64:$IDF_TOOLS_PATH/ninja/1.12.1:$IDF_TOOLS_PATH/xtensa-esp-elf/esp-14.2.0_20260121/xtensa-esp-elf/bin:$IDF_TOOLS_PATH/cmake/3.30.2/bin:$PATH"
-    "$IDF_TOOLS_PATH/python/v5.5.5/venv/Scripts/python.exe" "$IDF_PATH/tools/idf.py" build
+Instead drive idf.py through PowerShell with the installer profile, stripping `MSYSTEM` first. A ready-made wrapper is at `C:\tmp\build.ps1` (gitignored, recreatable):
+
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\tmp\build.ps1' -B build build
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -File 'C:\tmp\build.ps1' -B build_2_06 build
+
+The wrapper dot-sources `C:\Espressif\tools\Microsoft.v5.5.5.PowerShell_profile.ps1` (correct native Windows PATH: ninja 1.12.1, cmake 3.30.2, xtensa toolchain, venv python), then `Remove-Item Env:MSYSTEM`, then runs `python.exe idf.py @args`. Its contents:
+
+    $ErrorActionPreference = 'Continue'
+    . 'C:\Espressif\tools\Microsoft.v5.5.5.PowerShell_profile.ps1' *> $null
+    Remove-Item Env:MSYSTEM -ErrorAction SilentlyContinue
+    & 'C:\Espressif\tools\python\v5.5.5\venv\Scripts\python.exe' 'C:\esp\v5.5.5\esp-idf\tools\idf.py' @args
+    exit $LASTEXITCODE
 
 For fast, object-level rebuilds of an already-configured tree, drive ninja directly (ccache must be on PATH):
 
     export PATH="/c/Espressif/tools/ccache/4.12.1/ccache-4.12.1-windows-x86_64:$PATH"
     /c/Espressif/tools/ninja/1.12.1/ninja.exe -C build <target>
+
+This only works when no CMake reconfigure is needed; if sdkconfig.defaults, CMakeLists.txt, or board flags changed, use the PowerShell wrapper instead (it handles the configure step).
 
 ## Interrupt Conversation Feature
 
@@ -215,10 +263,27 @@ When the device is in an active conversation with the speech-to-speech backend, 
 ### Implementation Details
 
 - Interrupt state is shared globally (`s_interrupted` in `main.cpp`)
-- Button press uses external interrupt handler with negative edge trigger
+- The button is polled from `interrupt_button_poll_task` in `main.cpp` (50 ms edge-detect), never a GPIO ISR: the press mutes the ES8311 over I2C and sends `response.cancel` over SCTP, none of which is ISR-safe (the old `IRAM_ATTR` handler rebooted on the 2.06 when `ESP_LOG` tried to take a recursive lock in interrupt context)
 - `oai_send_audio_task()` checks interruption flag every 50ms when interrupted
 - `oai_send_audio()` in media.cpp returns early if interrupted (no mic capture)
-- Audio playback is stopped via BSP codec close or I2S TX channel disable
+- Audio playback is gated by `oai_is_interrupted()`: `oai_audio_decode()` drops downlink frames while interrupted (mic uplink is already gated by `oai_send_audio()`). On the Waveshare boards `oai_stop_audio_playback()` also mutes the BSP codec DAC (`esp_codec_dev_set_out_mute`) — never `esp_codec_dev_close()`, which would disable the shared full-duplex I2S channel and kill the mic. Never disable/enable the I2S TX channel to "pause" on Freenove/AIPI: the decoder is blocked in `i2s_channel_write(..., portMAX_DELAY)` and the channel toggle races it and reboots the board.
+- **Freenove/AIPI speaker buzz on interrupt (the "repeating last frame" noise) — the real fix is the silence pump, not `auto_clear`.** `tx_chan_cfg.auto_clear = true` is set on both the Freenove and AIPI TX channels, but it is NOT sufficient on the ESP32-S3: `auto_clear` (alias of `auto_clear_after_cb`) only zeroes DMA buffers that pass through the TX_EOF callback, and a mid-write underrun can leave the GDMA stuck re-sending a live buffer that never gets zeroed — so the speaker buzzes until the button is pressed again. The guaranteed fix is `oai_silence_pump_task` in `src/media.cpp` (started via `oai_start_silence_pump()` from `oai_init_interrupt_button()`): while interrupted it writes one zero 20 ms frame per 20 ms to the TX channel, so the DMA never underruns in the first place. It is the sole writer while interrupted (the decode path returns early), and `i2s_channel_write` serializes on the channel's internal binary semaphore, so the brief overlap on enter/exit of interrupt mode is safe (no channel enable/disable).
+
+## WiFi Configuration (AP Portal)
+
+`wifi_config_init()` in `src/wifi_config.cpp` runs synchronously at startup:
+
+- No saved config → starts the SoftAP portal (`OpenAi` / `192.168.4.1`), waits
+  for credentials, saves to NVS (`wifi_config` namespace), then `esp_restart()`
+  to apply them. That reboot after submitting the form is expected.
+- Saved config → `start_wifi_sta()` tries to connect (10 s timeout, up to 5
+  internal retries via `on_got_ip`). On success it proceeds to `oai_webrtc()`.
+- **On connect failure the device now returns to AP config mode in-place**
+  (stops STA, destroys the STA netif, starts the portal again) instead of
+  wiping NVS and rebooting into a loop. The saved config is kept, so a later
+  boot with an available network still connects on the first try. This was
+  the Waveshare 1.8 "reboots after entering WiFi info" report: the trace
+  showed a clean `esp_restart()` (`rst:0xc RTC_SW_CPU_RST`), not a crash.
 
 ## File-Level Change Guide
 
@@ -266,6 +331,15 @@ This file injects compile-time behavior into vendored libpeer. Keep these define
 - `CONFIG_USE_USRSCTP=0`
 
 Changing these can alter memory pressure, handshake timing, and media/data stability.
+
+### `src/battery.cpp` / `src/lcd.cpp` (battery bar)
+
+- Backend is compile-time per board (AXP2101 vs raw ADC); -1 means "no
+  battery" and hides the bar — keep that contract.
+- Freenove GPIO20 is shared with LCD_RST: only touch it from
+  `oai_battery_init()` (after `init_lvgl()`), never reconfigure it elsewhere.
+- AXP2101 registers are bit-set read-modify-writes on purpose; don't
+  overwrite the charger / fuel-gauge / watchdog configuration wholesale.
 
 ### `deps/libpeer/src/config.h`
 
@@ -326,6 +400,9 @@ Preserve and document any local deltas. Especially keep:
 6. Mic uplink produces non-zero Opus packets.
 7. Downlink audio decodes and plays without glitches.
 8. End-to-end conversational turn works repeatedly.
+9. Battery indicator: green bar renders at the bottom with the right
+   percentage (or hides on USB-only power); Freenove display still renders
+   after GPIO20 is released to the ADC.
 
 ## Suggested Debug Markers
 

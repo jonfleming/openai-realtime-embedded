@@ -112,6 +112,23 @@ static void oai_ondatachannel_onopen_task(void *userdata) {
   ESP_LOGI(LOG_TAG, "GREETING %s (%d bytes)", greeting_ret >= 0 ? "sent" : "failed", greeting_ret);
 }
 
+// Send a response.cancel to the server so it stops the current response and
+// stops streaming audio downlink. This is the standard OpenAI Realtime API
+// event for interrupting the model mid-response. (input_audio_buffer.interrupt
+// is NOT a valid Realtime API event; the server rejects it as unknown.) Safe
+// when the data channel isn't open yet: peer_connection_datachannel_send()
+// returns -1 if SCTP isn't connected.
+void oai_send_interrupt(void) {
+  if (peer_connection == NULL) {
+    return;
+  }
+  const char *interrupt_msg = "{\"type\": \"response.cancel\"}";
+  int ret = peer_connection_datachannel_send(peer_connection,
+                                             (char *)interrupt_msg,
+                                             strlen(interrupt_msg));
+  ESP_LOGI(LOG_TAG, "INTERRUPT %s (%d bytes)", ret >= 0 ? "sent" : "failed", ret);
+}
+
 static void oai_onconnectionstatechange_task(PeerConnectionState state,
                                              void *user_data) {
   ESP_LOGI(LOG_TAG, "PeerConnectionState: %s",
@@ -124,6 +141,9 @@ static void oai_onconnectionstatechange_task(PeerConnectionState state,
 #endif
   } else if (state == PEER_CONNECTION_COMPLETED) {
 #ifndef LINUX_BUILD
+    // Conversation is live: the WiFi/SSID setup text on screen is no longer
+    // relevant, so clear it (the mode indicator stays via status_display_task).
+    lvgl_ui_clear_messages();
     if (!audio_task_started) {
       audio_task_started = true;
       StackType_t *stack_memory = (StackType_t *)heap_caps_malloc(
@@ -168,7 +188,7 @@ void oai_webrtc() {
         .username = TURN_USERNAME,
         .credential = TURN_PASSWORD,
     };
-    ESP_LOGI(LOG_TAG, "ICE will use TURN server %s", TURN_SERVER_URL);
+    ESP_LOGI(LOG_TAG, "ICE will use TURN server %s with username %s and password %s", TURN_SERVER_URL, TURN_USERNAME, TURN_PASSWORD);
   }
 
   peer_connection = peer_connection_create(&peer_connection_config);

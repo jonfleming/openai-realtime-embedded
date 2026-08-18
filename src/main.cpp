@@ -14,6 +14,7 @@
 #include "lvgl.h"
 #include "esp_http_server.h"
 #include "wifi_config.h"
+#include "battery.h"
 
 // AIPI-Lite hardware initialization
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
@@ -34,158 +35,80 @@ static const char *BOARD_TAG = "AIPI-Lite";
 static const char *BOARD_TAG = "Freenove Media Kit";
 #endif
 
-// Interrupt state - protected by FreeRTOS task notifications or atomic ops
-static bool s_interrupted = false;
+// Interrupt state - toggled by the button polling task below, read by the
+// audio uplink/downlink tasks (possibly on the other core). volatile so the
+// compiler never caches the flag across loop iterations.
+static volatile bool s_interrupted = false;
 
 // Waveshare 1.8/2.06 only expose PWR (AXP2101 PMU) and BOOT (GPIO0) buttons;
 // there is no GPIO42 "right button" on these boards. BOOT is the only button
 // wired to a readable GPIO, so it's the interrupt button.
-#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+#define INTERRUPT_BUTTON_PIN LEFT_BUTTON_PIN  // 1 (left button, also power)
+#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+#define INTERRUPT_BUTTON_PIN 0  // BOOT button on GPIO0
+#elif defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
 #define INTERRUPT_BUTTON_PIN 0  // BOOT button on GPIO0
 #else
-// Freenove Media Kit: Left button on GPIO19
-#define INTERRUPT_BUTTON_PIN 19
+#define INTERRUPT_BUTTON_PIN 19  // Freenove Media Kit: left button on GPIO19
 #endif
 
-// Button interrupt handler - called when interrupt button is pressed
-#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
-static void IRAM_ATTR aipi_lite_interrupt_handler(void* arg) {
-    bool was_interrupted = s_interrupted;
-    s_interrupted = !was_interrupted; // Toggle state
-    
-    ESP_LOGI(TAG, "Interrupt button pressed: %s", 
-             s_interrupted ? "INTERRUPTION START" : "NORMAL MODE");
-    
-    if (s_interrupted) {
-        oai_stop_audio_playback();
-    }
-}
-#elif defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
-static void IRAM_ATTR waveshare_2_06_interrupt_handler(void* arg) {
-    bool was_interrupted = s_interrupted;
-    s_interrupted = !was_interrupted; // Toggle state
-    
-    ESP_LOGI(TAG, "Interrupt button pressed: %s", 
-             s_interrupted ? "INTERRUPTION START" : "NORMAL MODE");
-    
-    if (s_interrupted) {
-        oai_stop_audio_playback();
-    }
-}
-#else
-// Freenove Media Kit and Waveshare 1.8 use polling task instead of interrupt
-static void IRAM_ATTR freenove_waveshare_2_06_interrupt_handler(void* arg) {
-    bool was_interrupted = s_interrupted;
-    s_interrupted = !was_interrupted; // Toggle state
-    
-    ESP_LOGI(TAG, "Interrupt button pressed: %s", 
-             s_interrupted ? "INTERRUPTION START" : "NORMAL MODE");
-    
-    if (s_interrupted) {
-        oai_stop_audio_playback();
-    }
-}
-#endif
+// Poll the interrupt button from a task on every board. Polling is required
+// instead of a GPIO ISR: pressing the button mutes the ES8311 codec over I2C
+// and sends a response.cancel over SCTP, none of which is ISR-safe. The old
+// IRAM_ATTR handlers crashed on the 2.06 because ESP_LOG takes a recursive
+// lock that aborts in interrupt context (lock_init_generic panic).
+static void interrupt_button_poll_task(void *pvParameters) {
+    vTaskDelay(pdMS_TO_TICKS(500)); // let the system stabilize after boot
 
-// Waveshare 1.8 polling task - checks button state periodically
-#if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
-static void waveshare_1_8_interrupt_poll_task(void *pvParameters) {
-    vTaskDelay(pdMS_TO_TICKS(500)); // Wait for system to stabilize
-    
     gpio_config_t io_conf = {};
-    io_conf.intr_type = GPIO_INTR_DISABLE;  // No interrupts, just polling
+    io_conf.intr_type = GPIO_INTR_DISABLE;  // no interrupt, just polling
     io_conf.mode = GPIO_MODE_INPUT;
     io_conf.pin_bit_mask = (1ULL << INTERRUPT_BUTTON_PIN);
     io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
     io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    
-    if (gpio_config(&io_conf) == ESP_OK) {
-        ESP_LOGI(TAG, "Interrupt button polling started (GPIO %d)", INTERRUPT_BUTTON_PIN);
-        
-        bool last_state = gpio_get_level((gpio_num_t)INTERRUPT_BUTTON_PIN);
-        
-        while (1) {
-            vTaskDelay(pdMS_TO_TICKS(50)); // Poll every 50ms
-            
-            bool current_state = gpio_get_level((gpio_num_t)INTERRUPT_BUTTON_PIN);
-            
-            // Negative edge trigger (button press = LOW)
-            if (last_state == 1 && current_state == 0) {
-                bool was_interrupted = s_interrupted;
-                s_interrupted = !was_interrupted; // Toggle state
-                
-                ESP_LOGI(TAG, "Interrupt button pressed: %s", 
-                         s_interrupted ? "INTERRUPTION START" : "NORMAL MODE");
-                
-                if (s_interrupted) {
-                    oai_stop_audio_playback();
-                }
-            }
-            
-            last_state = current_state;
-        }
-    } else {
-        ESP_LOGE(TAG, "Failed to configure interrupt button polling");
+
+    if (gpio_config(&io_conf) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure interrupt button GPIO %d", INTERRUPT_BUTTON_PIN);
+        vTaskDelete(NULL);
+        return;
     }
-    
-    vTaskDelete(NULL);
+
+    ESP_LOGI(TAG, "Interrupt button polling started (%s GPIO %d)", BOARD_TAG, INTERRUPT_BUTTON_PIN);
+
+    bool last_state = gpio_get_level((gpio_num_t)INTERRUPT_BUTTON_PIN);
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(50)); // poll every 50 ms
+
+        bool current_state = gpio_get_level((gpio_num_t)INTERRUPT_BUTTON_PIN);
+
+        // Negative edge: the button press drives the pin LOW.
+        if (last_state == 1 && current_state == 0) {
+            s_interrupted = !s_interrupted; // toggle state
+
+            ESP_LOGI(TAG, "Interrupt button pressed: %s",
+                     s_interrupted ? "INTERRUPTION START" : "NORMAL MODE");
+
+            if (s_interrupted) {
+                oai_stop_audio_playback();
+                oai_send_interrupt();
+            } else {
+                oai_resume_audio_playback();
+            }
+        }
+
+        last_state = current_state;
+    }
 }
-#endif
 
 void oai_init_interrupt_button(void) {
-#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
-    // Left button (GPIO1) is the interrupt button on AIPI-Lite
-    gpio_config_t io_conf = {};
-    io_conf.intr_type = GPIO_INTR_NEGEDGE;
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pin_bit_mask = (1ULL << LEFT_BUTTON_PIN);
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    
-    if (gpio_config(&io_conf) == ESP_OK) {
-        gpio_install_isr_service(0);  // AIPI-Lite needs its own ISR service
-        gpio_isr_handler_add((gpio_num_t)LEFT_BUTTON_PIN, aipi_lite_interrupt_handler, NULL);
-        ESP_LOGI(TAG, "Interrupt button initialized (GPIO %d)", LEFT_BUTTON_PIN);
-    } else {
-        ESP_LOGE(TAG, "Failed to configure interrupt button");
-    }
-#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
-    // Waveshare 1.8: poll the BOOT button (GPIO0) from a task
-    xTaskCreate(waveshare_1_8_interrupt_poll_task, "waveshare_int_poll", 
-                4096, NULL, 5, NULL);
-#elif defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
-    // Waveshare 2.06: BOOT button (GPIO0) as interrupt button (the only
-    // readable button; PWR goes to the AXP2101 PMU).
-    gpio_config_t io_conf = {};
-    io_conf.intr_type = GPIO_INTR_NEGEDGE;
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pin_bit_mask = (1ULL << 0);
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    
-    if (gpio_config(&io_conf) == ESP_OK) {
-        gpio_install_isr_service(0);  // the 2.06 BSP does not install one
-        gpio_isr_handler_add((gpio_num_t)0, waveshare_2_06_interrupt_handler, NULL);
-        ESP_LOGI(TAG, "Interrupt button initialized (%s GPIO %d)", BOARD_TAG, 0);
-    } else {
-        ESP_LOGE(TAG, "Failed to configure interrupt button");
-    }
-#else
-    // Freenove Media Kit: Left button on GPIO19
-    gpio_config_t io_conf = {};
-    io_conf.intr_type = GPIO_INTR_NEGEDGE;
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pin_bit_mask = (1ULL << 19);
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    
-    if (gpio_config(&io_conf) == ESP_OK) {
-        gpio_install_isr_service(0);  // Freenove needs its own ISR service
-        gpio_isr_handler_add((gpio_num_t)19, freenove_waveshare_2_06_interrupt_handler, NULL);
-        ESP_LOGI(TAG, "Interrupt button initialized (Freenove GPIO %d)", 19);
-    } else {
-        ESP_LOGE(TAG, "Failed to configure interrupt button");
-    }
+    xTaskCreate(interrupt_button_poll_task, "interrupt_poll", 4096, NULL, 5, NULL);
+    // Freenove/AIPI: keep the I2S TX DMA fed with silence while interrupted so
+    // the speaker never re-transmits the last frame on underrun (the button
+    // buzz that wouldn't stop until pressed again). Compiled out on Waveshare
+    // boards (they mute the BSP codec DAC instead).
+#if !defined(WAVESHARE_BSP_BOARD) || !WAVESHARE_BSP_BOARD
+    oai_start_silence_pump();
 #endif
 }
 
@@ -196,6 +119,40 @@ bool oai_is_interrupted(void) {
 void oai_set_interrupted(bool interrupted) {
     s_interrupted = interrupted;
     ESP_LOGI(TAG, "Interrupt state set: %s", interrupted ? "INTERRUPTED" : "NORMAL");
+}
+
+// Reflect the conversation mode on the display ("Listening" / "Paused").
+// Runs as its own task so the LVGL update always happens in task context --
+// never from the button ISRs on the 2.06/AIPI/Freenove boards -- and works
+// uniformly on every board. Initial state is "Listening".
+static void status_display_task(void *pvParameters) {
+    vTaskDelay(pdMS_TO_TICKS(300)); // let lvgl_ui() finish building the screen
+    bool last = false;
+    lvgl_ui_status_set_text("Listening");
+    while (1) {
+        bool interrupted = oai_is_interrupted();
+        if (interrupted != last) {
+            lvgl_ui_status_set_text(interrupted ? "Paused" : "Listening");
+            last = interrupted;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+}
+
+// Poll the battery every few seconds and push changes to the bottom-of-screen
+// indicator. Runs as its own task so the LVGL update always happens in task
+// context and the ADC/I2C read never blocks the audio or network tasks.
+static void battery_display_task(void *pvParameters) {
+    vTaskDelay(pdMS_TO_TICKS(500)); // let lvgl_ui() finish building the screen
+    int last_pct = -2;
+    while (1) {
+        int pct = oai_battery_get_percent();
+        if (pct != last_pct) {
+            lvgl_ui_battery_set_percent(pct);
+            last_pct = pct;
+        }
+        vTaskDelay(pdMS_TO_TICKS(5000));
+    }
 }
 
 // Stop audio playback (speaker)
@@ -250,6 +207,12 @@ extern "C" void app_main(void) {
   esp_err_t lvgl_ret = init_lvgl();
   if (lvgl_ret == ESP_OK) {
     lvgl_ui();
+    xTaskCreate(status_display_task, "status_display", 4096, NULL, 3, NULL);
+    // Battery monitor (after init_lvgl so the Freenove shared LCD_RST pin has
+    // finished its reset pulse and can be released to the ADC).
+    if (oai_battery_init() == ESP_OK) {
+      xTaskCreate(battery_display_task, "battery_display", 4096, NULL, 2, NULL);
+    }
   } else {
     ESP_LOGE(TAG, "Display/LVGL init failed (%s). Continuing in headless mode.", esp_err_to_name(lvgl_ret));
   }

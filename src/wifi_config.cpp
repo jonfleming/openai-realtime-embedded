@@ -543,9 +543,26 @@ void wifi_config_init(void) {
             vTaskDelay(500);
             lvgl_ui_label_set_text("You can chat now.");
         } else {
-            ESP_LOGI(TAG, "WiFi connection failed.");
-            lvgl_ui_label_set_text("WiFi connection failed.");
-            clear_nvs_config();
+            // The saved network is unreachable (wrong password, out of range,
+            // router down). Do NOT wipe the config and reboot into a loop:
+            // stop STA mode and return to the AP portal so the user can fix
+            // the credentials. The saved config is kept, so a later boot with
+            // an available network still connects on the first try.
+            ESP_LOGI(TAG, "WiFi connection failed. Returning to AP config mode.");
+            lvgl_ui_label_set_text("WiFi connection failed. Re-enter credentials via AP.");
+            ESP_ERROR_CHECK(esp_wifi_stop());
+            esp_netif_destroy(esp_netif_sta);
+            esp_netif_ap = start_wifi_ap(EXAMPLE_ESP_WIFI_AP_SSID, EXAMPLE_ESP_WIFI_AP_PASSWD);
+            ESP_LOGI(TAG, "Use your browser to open http://192.168.4.1");
+            lvgl_ui_label_set_text("Connect to the router \"OpenAi\" and access \"192.168.4.1\" using a browser.");
+
+            start_wifi_config_webserver();
+            const wifi_config_data_t *web_config = get_web_wifi_config_data();
+            ESP_LOGI(TAG, "Web Configuration: SSID=%s, PSD=%s", web_config->ssid, web_config->password);
+            ESP_LOGI(TAG, "OPENAI_KEY=%s", web_config->openai_key);
+            ESP_ERROR_CHECK(esp_wifi_stop());
+            esp_netif_destroy(esp_netif_ap);
+            write_wifi_config_to_nvs(web_config);
             esp_restart();
         }
     }

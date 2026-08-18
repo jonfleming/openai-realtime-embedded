@@ -17,3 +17,6 @@ void oai_init_interrupt_button(void);
 bool oai_is_interrupted(void);
 void oai_set_interrupted(bool interrupted);
 void oai_stop_audio_playback(void);
+void oai_resume_audio_playback(void);
+void oai_send_interrupt(void);
+void oai_start_silence_pump(void);  // Freenove/AIPI: silence the TX DMA while interrupted
