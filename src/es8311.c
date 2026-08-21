@@ -14,8 +14,8 @@
  *   - Register 0x00 (RESET) must be left at 0x80 (power-on command) as the
  *     LAST write. Leaving it at 0x00 powers the codec down: I2C still ACKs
  *     and registers read back, but both the ADC and DAC stay silent.
- *   - The 16 kHz clock coefficients are CLK2=0x08 (pre_mult=1), CLK3=0x10
- *     (adc_osr=16), CLK4=0x20 (dac_osr=32), CLK6=0x03 (bclk_div=4).
+ *   - The 16 kHz clock coefficients are CLK2=0x00 (pre_div=1, pre_mult=1),
+ *     CLK3=0x10 (adc_osr=16), CLK4=0x20 (dac_osr=32), CLK6=0x03 (bclk_div=4).
  *   - ADC volume is 0xC8 (REG17), DAC volume 0xBF (REG32), mic gain 0x00
  *     (REG16). Do not add extra register writes on top of the reference
  *     sequence - the defaults it leaves alone are correct.
@@ -164,11 +164,16 @@ esp_err_t es8311_init(void)
     ES8311_WRITE(ES8311_RESET_REG, 0x00);
 
     // ---- Clock: 16 kHz, MCLK pin at 256 * fs = 4.096 MHz ----
-    // Register values are the exact reference sequence (ESPHome es8311 /
-    // the working Arduino sketch on this board). bclk_div=4 means the
-    // codec expects BCLK = MCLK/4 = 1.024 MHz = 64 * fs (32-bit slots).
+    // Register values follow the ES8311 coefficient table used by the
+    // espressif/ESP-ADF es8311 driver for {mclk 4096000, rate 16000}: pre_div=1,
+    // pre_mult=1 -> CLK2=0x00. CRITICAL: do NOT copy ESPHome's CLK2=0x08 here.
+    // ESPHome writes pre_mult << 3 (0x08 = field 0b01 = x2), which is calibrated
+    // for a 128 * fs MCLK (2.048 MHz); with this board's 256 * fs MCLK
+    // (4.096 MHz) it doubles the codec's internal clock and the DAC/ADC both
+    // output garbage ("scratchy static"). bclk_div=4 means the codec expects
+    // BCLK = MCLK/4 = 1.024 MHz = 64 * fs (32-bit slots).
     ES8311_WRITE(ES8311_CLK_MANAGER1, 0x3F);  // MCLK pin source, all clocks enabled
-    ES8311_WRITE(ES8311_CLK_MANAGER2, 0x08);  // pre_div=1, pre_mult=1
+    ES8311_WRITE(ES8311_CLK_MANAGER2, 0x00);  // pre_div=1, pre_mult=1 (see above)
     ES8311_WRITE(ES8311_CLK_MANAGER3, 0x10);  // fs_mode=0, adc_osr=16
     ES8311_WRITE(ES8311_CLK_MANAGER4, 0x20);  // dac_osr=32
     ES8311_WRITE(ES8311_CLK_MANAGER5, 0x00);  // adc_div=1, dac_div=1

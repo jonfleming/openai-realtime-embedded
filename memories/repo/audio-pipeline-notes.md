@@ -3,29 +3,48 @@
 Concise repo memory for confirmed audio fixes. Keep entries short: what changed,
 why it mattered, what symptom it fixed.
 
-## AIPI-Lite: ES8311 audio dead (all-zero mic + silent speaker) — CONFIRMED FIX
+## AIPI-Lite: ES8311 scratchy/static audio — CONFIRMED FIX (CLK2 pre_mult)
 
-- **Symptom:** Mic samples all zero, no speaker output, while I2C/registers read
-  back fine (`RST=0x00` in the regs dump was the giveaway).
-- **Fix:** Mirror the working Arduino sketch / ESPHome `es8311` driver for this
-  exact board, in `src/es8311.c` + `src/media.cpp`:
-  - 16 kHz both directions (not 24 kHz), 16-bit data in **32-bit slots**
-    (BCLK = 64 × fs = 1.024 MHz, MCLK/BCLK = 4 → codec `bclk_div=4`).
-  - Register 0x00 must end at **0x80 (power-on) as the last write**
-    (0x1F → 0x00 → config → 0x80). Ending at 0x00 powers the codec down.
-  - 16 kHz clock coefficients: CLK2=0x08 (pre_mult=1), CLK3=0x10, CLK4=0x20,
-    CLK6=0x03. SDP 0x0C/0x0C. ADC vol 0xC8 (REG17), DAC vol 0xBF (REG32),
-    mic gain 0x00 (REG16), REG37=0x08, REG31=0x00.
-  - Mic capture: upper 16 bits of each 32-bit slot, L+R summed, ×12 gain
-    (mirrors sketch `convert_input_to_backend_pcm`).
-  - Playback: 16-bit samples left-aligned (`<< 16`) into 32-bit slots.
-- **Why it mattered:** wrong PLL clock multiplier + wrong slot width + extra
-  post-init register writes (`REG37=0x48`, `REG16=0x40`) all diverged from the
-  proven reference and left the codec silent in both directions.
-- **Measured result:** after the fix, the ES8311 logs
-  `initialized (16 kHz, I2S slave, 16-bit in 32-bit slots)` with
-  `RST=0x80 CLK2=0x08 CLK4=0x20`, mic shows non-zero energy, and assistant
-  audio plays through the speaker.
+- **Symptom:** assistant audio sounds like static / missing bits. The codec was
+  alive (regs read back, mic had energy, speaker made sound) — which is why an
+  earlier attempt mislabeled it "working".
+- **Root cause:** `src/es8311.c` had copied ESPHome's register constants, but
+  ESPHome's `pre_mult << 3` write (CLK2=0x08, field 0b01 = ×2) is calibrated
+  for a **128 × fs MCLK (2.048 MHz)**. This board's I2S feeds the codec
+  **256 × fs (4.096 MHz)** MCLK, so the codec's internal clock ran 2× off and
+  both DAC and ADC output garbage.
+- **Fix:** CLK2 = **0x00** (pre_div=1, pre_mult=1), matching the espressif /
+  ESP-ADF es8311 coefficient table for {mclk 4096000, rate 16000} — the same
+  driver config the working Waveshare 1.8 board uses at 16 kHz. Everything else
+  (32-bit slots, bclk_div=4, SDP 0x0C, OSR 16/32, RESET 0x80 last) was already
+  correct.
+- **Why it mattered:** a wrong pre_mult doubles the codec's internal clock;
+  the ADC/DAC then run with a corrupted modulator clock → static, not silence,
+  so it passed a "does it make sound" smoke test.
+- **Measured result:** builds pass for Freenove, AIPI, Waveshare 1.8 and 2.06;
+  AIPI assistant audio is clean. ESPHome's `es8311` values must not be
+  copy-pasted blindly — they assume 128 × fs MCLK.
+
+## AIPI-Lite display: 90° rotation, oversized fonts, unreadable WiFi text
+
+- **Symptom:** text rotated 90° CCW; "Listening"/"Paused" wrapped; WiFi
+  setup instructions unreadable (128×128 screen, no touch, no scroll).
+- **Fix (`src/lcd.cpp`):** AIPI display flags now `swap_xy=true, mirror_x=true`
+  (matching the xiaozhi-esp32 aipi-lite board config — all-false addressed the
+  panel rotated 90°). AIPI UI constants: status font 16, message font 12,
+  container pad-top 14, battery reserve 26, container inset 2 px each side,
+  button padding 2 px. `src/wifi_config.cpp` messages shortened so the setup
+  steps fit on one screen.
+- **Message text on AIPI must be self-contained short lines (forced with
+  `\n`), not one long wrapped string:** the WiFi instructions are e.g.
+  `"Connect to WiFi\n\"OpenAi\"\nthen open\n192.168.4.1"` (~15 chars/line max).
+  The container uses `LV_SCROLLBAR_MODE_OFF` (no touch input → nothing can
+  scroll; a visible scrollbar also eats ~7 px of text width) and border width
+  0. Don't reintroduce long single-line texts or the AUTO scrollbar — the top
+  of the message gets cut off and can never be scrolled back.
+- **Why it mattered:** AIPI reused the big-screen (480×320) fonts and layout on
+  a 128×128 panel with no touch input — nothing could be read or scrolled.
+- **Fonts:** `CONFIG_LV_FONT_MONTSERRAT_12/16` added to `sdkconfig.defaults`.
 
 ## Freenove/AIPI speaker buzz on interrupt button — CONFIRMED FIX
 

@@ -1,6 +1,6 @@
 {
-    "wifi_ssid": "iJon",
-    "wifi_password": "source.code",
+    "wifi_ssid": "tailnet",
+    "wifi_password": "GL.Amicus.44",
     "openai_api_key": "llama",
     "turn_server": "turn:turn.fleming.ai:3478",
     "turn_username": "realtime",

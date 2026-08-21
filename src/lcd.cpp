@@ -50,9 +50,12 @@
    #define DISPLAY_PCLK_HZ (27 * 1000 * 1000)
    #define DISPLAY_WIDTH 128
    #define DISPLAY_HEIGHT 128
-   #define DISPLAY_MIRROR_X false
+   // Orientation matches the working xiaozhi-esp32 aipi-lite board config
+   // (swap_xy + mirror_x). With all-false the panel addressing was rotated
+   // 90 deg CCW and the text ran sideways.
+   #define DISPLAY_MIRROR_X true
    #define DISPLAY_MIRROR_Y false
-   #define DISPLAY_SWAP_XY false
+   #define DISPLAY_SWAP_XY true
    #define DISPLAY_INVERT_COLOR true
    #define DISPLAY_RGB_ORDER LCD_RGB_ELEMENT_ORDER_BGR
    #define DISPLAY_OFFSET_X 0
@@ -118,12 +121,32 @@ static lv_obj_t *status_label = NULL;
 // Battery indicator (bottom of screen): a horizontal bar filled with green
 // proportional to the remaining charge, with the percentage text on top.
 // Created lazily by lvgl_ui_battery_set_percent() and hidden while no
-// battery is present. Height reserved below is the room the container leaves
-// for it.
-#define BATTERY_UI_RESERVED 36
+// battery is present. UI_BATTERY_RESERVED below is the room the container
+// leaves for it.
 #define BATTERY_BAR_W_PCT   45
 #define BATTERY_BAR_H       18
 static lv_obj_t *battery_bar = NULL;
+
+// UI sizes are board-dependent: the AIPI-Lite has a tiny 128x128 display and
+// no touch input, so it uses small fonts and a tighter layout that fits the
+// WiFi setup instructions on one screen (nothing to scroll with).
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+#define UI_STATUS_FONT       &lv_font_montserrat_16
+#define UI_MESSAGE_FONT      &lv_font_montserrat_12
+#define UI_CONTAINER_PAD_TOP 14
+#define UI_BATTERY_RESERVED  26
+#define UI_CONTAINER_MARGIN_X 2
+#define UI_CONTAINER_MARGIN_Y 2
+#define UI_BUTTON_PAD        2
+#else
+#define UI_STATUS_FONT       &lv_font_montserrat_32
+#define UI_MESSAGE_FONT      &lv_font_montserrat_20
+#define UI_CONTAINER_PAD_TOP 56
+#define UI_BATTERY_RESERVED  36
+#define UI_CONTAINER_MARGIN_X 5
+#define UI_CONTAINER_MARGIN_Y 5
+#define UI_BUTTON_PAD        13
+#endif
 
 // LVGL mutex access: the Waveshare BSP owns the lock on those boards
 // (bsp_display_lock() wraps lvgl_port_lock() internally); the SPI-panel
@@ -633,9 +656,11 @@ void lvgl_ui(void)
     lv_obj_set_size(lvgl_screen.screen, DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
     // Create container. Height leaves room at the bottom for the battery
-    // bar (BATTERY_UI_RESERVED) so the message labels never run under it.
+    // bar (UI_BATTERY_RESERVED) so the message labels never run under it.
     lvgl_screen.container = lv_obj_create(lvgl_screen.screen);
-    lv_obj_set_size(lvgl_screen.container, DISPLAY_WIDTH-10, DISPLAY_HEIGHT-10-BATTERY_UI_RESERVED);
+    lv_obj_set_size(lvgl_screen.container,
+                    DISPLAY_WIDTH - 2 * UI_CONTAINER_MARGIN_X,
+                    DISPLAY_HEIGHT - 2 * UI_CONTAINER_MARGIN_Y - UI_BATTERY_RESERVED);
     lv_obj_center(lvgl_screen.container);                                                   // Center
     // Hide the right scrollbar of the container
     lv_obj_set_style_pad_all(lvgl_screen.container, 0, LV_PART_MAIN);
@@ -643,10 +668,18 @@ void lvgl_ui(void)
     lv_obj_set_style_bg_color(lvgl_screen.container, lv_color_hex(0xFFFFFF), LV_PART_MAIN); // White background
     lv_obj_set_flex_flow(lvgl_screen.container, LV_FLEX_FLOW_COLUMN);                       // Vertical layout
     lv_obj_set_scroll_dir(lvgl_screen.container, LV_DIR_VER);                               // Vertical scroll
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+    // AIPI-Lite: no touch input, so nothing can ever scroll -- drop the
+    // scrollbar entirely (it also eats ~7px of text width while overflowing,
+    // which made the wrapping even worse) and the container's default border.
+    lv_obj_set_scrollbar_mode(lvgl_screen.container, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_style_border_width(lvgl_screen.container, 0, LV_PART_MAIN);
+#else
     lv_obj_set_scrollbar_mode(lvgl_screen.container, LV_SCROLLBAR_MODE_AUTO);               // Auto scroll
+#endif
     // Leave top room for the floating mode indicator ("Listening" / "Paused")
     // so the green message labels don't run underneath it.
-    lv_obj_set_style_pad_top(lvgl_screen.container, 56, LV_PART_MAIN);
+    lv_obj_set_style_pad_top(lvgl_screen.container, UI_CONTAINER_PAD_TOP, LV_PART_MAIN);
     lcd_disp_unlock(); // Unlock LVGL
 }
 
@@ -660,7 +693,7 @@ void lvgl_ui_status_set_text(const char *text)
 
     if (status_label == NULL) {
         status_label = lv_label_create(lvgl_screen.screen);
-        lv_obj_set_style_text_font(status_label, &lv_font_montserrat_32, LV_PART_MAIN);
+        lv_obj_set_style_text_font(status_label, UI_STATUS_FONT, LV_PART_MAIN);
         lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
         lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(status_label, lv_pct(90));
@@ -741,6 +774,11 @@ void lvgl_ui_label_set_text(const char *text)
     lcd_disp_lock();
     lv_obj_t *btn = lv_btn_create(lvgl_screen.container);
     lv_obj_set_style_bg_color(btn, lv_color_hex(0x00FF00), LV_STATE_DEFAULT);
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+    // Minimal button padding on the tiny 128x128 screen so the text gets the
+    // full width instead of wrapping mid-phrase.
+    lv_obj_set_style_pad_all(btn, UI_BUTTON_PAD, LV_STATE_DEFAULT);
+#endif
     lv_obj_set_width(btn, lv_pct(98));                                           // Full width
     lv_obj_set_height(btn, LV_SIZE_CONTENT);                                     // Height adapts to content
     lv_obj_set_style_radius(btn, 5, LV_STATE_DEFAULT);                           // Rounded corners
@@ -748,7 +786,7 @@ void lvgl_ui_label_set_text(const char *text)
     lv_obj_t *label = lv_label_create(btn);                                      // Create label
     lv_label_set_text(label, text);                                              // Set label text
     lv_obj_set_style_text_color(label, lv_color_hex(0x000000), LV_STATE_DEFAULT); // Set text color to black
-    lv_obj_set_style_text_font(label, &lv_font_montserrat_20, LV_PART_MAIN);     // Set font size to 20
+    lv_obj_set_style_text_font(label, UI_MESSAGE_FONT, LV_PART_MAIN);            // Board-sized font
     lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_LEFT, LV_PART_MAIN);        // Text align left
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);                           // Auto-wrap
     lv_obj_set_width(label, lv_pct(100));                                        // Full width
@@ -765,13 +803,12 @@ void lvgl_ui_label_set_text(const char *text)
     }
     lv_obj_update_layout(lvgl_screen.container);
 
-    int index = lv_obj_get_child_cnt(lvgl_screen.container);
-    if(index > 0)
-    {
-        lv_obj_t *last_child = lv_obj_get_child(lvgl_screen.container, index - 1);
-        lv_coord_t visible_height = lv_obj_get_content_height(lvgl_screen.container); 
-        lv_coord_t y_aligned = lv_obj_get_y(last_child) - (visible_height / 2) + (lv_obj_get_height(last_child) / 2);
-        lv_obj_scroll_to_y(lvgl_screen.container, y_aligned, LV_ANIM_OFF);
-    }
+    // Always reveal the newest message. The old code centered the last child
+    // in the viewport, which scrolled the top half of a long label off-screen
+    // and, on boards without touch input (AIPI-Lite), could never be scrolled
+    // back. Scroll-to-bottom clamps to 0 when the content fits.
+    lv_obj_scroll_to_y(lvgl_screen.container,
+                       lv_obj_get_scroll_bottom(lvgl_screen.container),
+                       LV_ANIM_OFF);
     lcd_disp_unlock();
 }

@@ -71,6 +71,14 @@ regenerates (an existing sdkconfig keeps stale values).
 - **Backlight PWM**: Freenove uses GPIO2; AIPI-Lite uses GPIO3 (strapping pin, works but shows warning)
 - **Display SPI**: Different pins due to different board layout
 - **Buttons**: Left button on GPIO1 (AIPI-Lite) vs GPIO19 (Freenove); Right button on GPIO42
+- **Display (AIPI-Lite)**: 128x128 ST7735, NO touch input — the UI must fit on
+  one screen with nothing to scroll. `src/lcd.cpp` uses `swap_xy=true,
+  mirror_x=true` (all-false renders rotated 90°), status font 16 / message
+  font 12, container inset 2 px, pad-top 14, `LV_SCROLLBAR_MODE_OFF`, border
+  0, and 2 px button padding so text gets full width. Screen texts in
+  `src/wifi_config.cpp` must be short forced `\n` lines (~15 chars max), e.g.
+  `"Connect to WiFi\n\"OpenAi\"\nthen open\n192.168.4.1"` — a long
+  single-line string wraps mid-phrase and its top gets cut with no way back.
 
 ### Waveshare boards (1.8 and 2.06)
 
@@ -149,7 +157,8 @@ The AIPI-Lite has one ES8311 codec with ADCLRC/DACLRC tied, so TX and RX must ru
 - 16-bit data in **32-bit slots** (BCLK = 64 × fs = 1.024 MHz, MCLK/BCLK = 4), MCLK = GPIO6 at 256 × fs (4.096 MHz).
 - Mic captured at 16 kHz, extracted from the upper 16 bits of each 32-bit slot (L+R summed, ×12 gain, mirroring the sketch's `convert_input_to_backend_pcm`), encoded as Opus mono 16 kHz, 320 samples/frame (20 ms) — the RTP timestamp still advances 960/20 ms (48 kHz clock), matching `opus/48000` negotiation.
 - Speaker plays decoded 16 kHz audio left-aligned (`<< 16`) into the same 32-bit slots.
-- The ES8311 is configured over I2C (SDA=5, SCL=4, addr 0x18) by `src/es8311.c`, using the exact ESPHome/Arduino register sequence proven on this board (CLK1=0x3F, CLK2=0x08, CLK3=0x10, CLK4=0x20, CLK6=0x03, SDP 0x0C, REG17=0xC8, REG37=0x08, REG31=0x00). Speaker amp enable is GPIO9, driven high.
+- The ES8311 is configured over I2C (SDA=5, SCL=4, addr 0x18) by `src/es8311.c` (CLK1=0x3F, CLK2=0x00, CLK3=0x10, CLK4=0x20, CLK6=0x03, SDP 0x0C, REG17=0xC8, REG37=0x08, REG31=0x00). Speaker amp enable is GPIO9, driven high.
+- **CRITICAL — CLK2 must be 0x00, never 0x08.** This board feeds the codec MCLK at 256 × fs = 4.096 MHz (16 kHz, 32-bit slots), and the espressif/ESP-ADF es8311 coefficient table for {4096000, 16000} is pre_div=1, pre_mult=1 → CLK2=0x00. ESPHome's `pre_mult << 3` encoding (0x08) is calibrated for a 128 × fs MCLK (2.048 MHz); pairing it with 256 × fs doubles the codec's internal clock and the DAC/ADC output garbage — the "scratchy static" AIPI audio regression. Do not "restore" the ESPHome value.
 
 Critical: `src/es8311.c` must leave ES8311 register 0x00 (RESET) at **0x80 (power-on)** as the LAST write (0x1F → 0x00 → config → 0x80). An init that ends at 0x00 powers the codec down: I2C still ACKs and registers still read back, but both the ADC (all-zero mic) and DAC (silent speaker) are dead. Do NOT add register writes beyond the reference sequence — e.g. REG37 must be 0x08 (not 0x48) and REG16 (mic gain) must stay 0x00.
 
