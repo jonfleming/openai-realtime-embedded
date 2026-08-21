@@ -34,19 +34,51 @@
   "{\"type\": \"response.create\", \"response\": {\"modalities\": " \
   "[\"audio\", \"text\"], \"instructions\": \"Say 'How can I help?.'\"}}"
 
+// Hindsight memory bank exposed via the bank-specific MCP endpoint
+// (https://hindsight.vectorize.io/developer/mcp-server). The bank id
+// ("Speech") is part of the URL path, so no X-Bank-Id header is needed.
+#ifndef HINDSIGHT_MCP_URL
+#define HINDSIGHT_MCP_URL "https://hindsight.fleming.ai/mcp/Speech/"
+#endif
+
+#define MEMORY_PROMPT \
+  "\\n\\n# Tools\\n## recall\\nUse when:\\n" \
+  "- The user asks a question about themselves, past conversations, " \
+  "or preferences.\\n" \
+  "- At the very start of a new session to pull up context about " \
+  "who you are talking to.\\n" \
+  "\\n## retain\\nUse when:\\n" \
+  "- The user shares personal facts, preferences, interests, or " \
+  "explicit instructions (e.g., \\\"I prefer to be called Dave\\\", " \
+  "\\\"My birthday is in June\\\").\\n" \
+  "- Do NOT ask for permission before retaining a fact. Be proactive.\\n" \
+  "\\n## Tool Call Preambles\\n" \
+  "- Before calling any tool, say a brief filler phrase to mask " \
+  "execution latency (e.g., \\\"Let me look that up,\\\" " \
+  "\\\"Checking my memory,\\\" \\\"One moment\\\").\\n" \
+  "- After the tool returns, speak the result naturally in one or " \
+  "two sentences."
+
 #define SYSTEM_PROMPT \
   "You are a **helpful assistant**. You can **hear** through your speakers" \
   " and **see** through your camera. Always **keep your replies brief**," \
-  " limiting them to **one to two sentences**."
+  " limiting them to **one to two sentences**." MEMORY_PROMPT
 
 #define SESSION_UPDATE                                              \
   "{\"type\": \"session.update\", \"session\": {"              \
   "\"type\": \"realtime\", "                                 \
+  "\"voice\": \"vivian\", " \
   "\"instructions\": \"" SYSTEM_PROMPT "\", "                \
   "\"audio\": {"                                             \
   "\"input\": {\"turn_detection\": {\"type\": \"server_vad\", " \
   "\"threshold\": 0.3, "                                      \
-  "\"interrupt_response\": true}}}}}"
+  "\"interrupt_response\": true}}}, "                        \
+  "\"tools\": [{"                                           \
+  "\"type\": \"mcp\", "                                     \
+  "\"server_label\": \"hindsight\", " \
+  "\"server_url\": \"" HINDSIGHT_MCP_URL "\", " \
+  "\"allowed_tools\": [\"recall\", \"retain\"]" \
+  "}]}}"
 
 PeerConnection *peer_connection = NULL;
 
