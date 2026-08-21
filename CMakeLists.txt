@@ -72,7 +72,7 @@ else()
   set(ENV{FREEBUFF_BOARD} "waveshare_amoled_1_8")
 endif()
 
-add_compile_definitions(OPENAI_REALTIMEAPI="https://speech.fleming.ai/v1/realtime")
+add_compile_definitions(OPENAI_REALTIMEAPI="https://speech.techion.net/v1/realtime")
 
 # TURN relay server for WebRTC/ICE media. The URL is public; the username and
 # password (coturn long-term credentials) come from the gitignored
@@ -89,7 +89,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/privateConfig.json")
     string(JSON PV_TURN_PASSWORD GET "${PV_CFG}" turn_password)
     string(JSON PV_TURN_SERVER ERROR_VARIABLE PV_TURN_SERVER_ERR GET "${PV_CFG}" turn_server)
     if(PV_TURN_SERVER_ERR)
-      set(PV_TURN_SERVER "turn:turn.fleming.ai:3478")
+      set(PV_TURN_SERVER "turn:turn.techion.net:3478")
     endif()
   endif()
 else()

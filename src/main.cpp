@@ -121,19 +121,47 @@ void oai_set_interrupted(bool interrupted) {
     ESP_LOGI(TAG, "Interrupt state set: %s", interrupted ? "INTERRUPTED" : "NORMAL");
 }
 
+// Battery saver: while Paused (mic muted, server audio ignored) the device is
+// doing nothing useful, so kill the backlight after this long to extend battery
+// life. Restored as soon as the interrupt button returns the state to
+// "Listening" (see status_display_task below).
+#define DISPLAY_AUTO_OFF_PAUSE_MS (10 * 1000)
+
 // Reflect the conversation mode on the display ("Listening" / "Paused").
 // Runs as its own task so the LVGL update always happens in task context --
 // never from the button ISRs on the 2.06/AIPI/Freenove boards -- and works
 // uniformly on every board. Initial state is "Listening".
+//
+// Also handles the display auto-off: once the device has been Paused for
+// DISPLAY_AUTO_OFF_PAUSE_MS the backlight is turned off (the screen is
+// unreadable in Paused mode anyway and saves battery), and it is switched
+// back on immediately when the button restores "Listening".
 static void status_display_task(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(300)); // let lvgl_ui() finish building the screen
     bool last = false;
+    bool backlight_off = false;
+    TickType_t paused_since = 0;
     lvgl_ui_status_set_text("Listening");
     while (1) {
         bool interrupted = oai_is_interrupted();
         if (interrupted != last) {
             lvgl_ui_status_set_text(interrupted ? "Paused" : "Listening");
             last = interrupted;
+            if (interrupted) {
+                paused_since = xTaskGetTickCount();
+            } else if (backlight_off) {
+                // Back to "Listening": wake the display immediately.
+                lvgl_ui_set_backlight(true);
+                backlight_off = false;
+            }
+        }
+        // Paused for a while and still off: kill the backlight once, then
+        // wait for the next state change (the 100 ms poll adds <100 ms jitter
+        // to the 10 s threshold, which is irrelevant here).
+        if (last && !backlight_off &&
+            (xTaskGetTickCount() - paused_since) >= pdMS_TO_TICKS(DISPLAY_AUTO_OFF_PAUSE_MS)) {
+            lvgl_ui_set_backlight(false);
+            backlight_off = true;
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }

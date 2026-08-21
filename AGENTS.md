@@ -274,6 +274,16 @@ When the device is in an active conversation with the speech-to-speech backend, 
 ### Implementation Details
 
 - Interrupt state is shared globally (`s_interrupted` in `main.cpp`)
+- **Display auto-off while paused (battery saver)**: `status_display_task` in
+  `main.cpp` kills the backlight once the device has been Paused for 10 s
+  (`DISPLAY_AUTO_OFF_PAUSE_MS`) — the mic is muted and server audio is
+  ignored, so nothing is displayed that matters — and turns it back on the
+  moment the button restores "Listening". Backend is `lvgl_ui_set_backlight()`
+  in `src/lcd.cpp`: Waveshare boards use `bsp_display_brightness_set(0|85)`
+  (panel command), Freenove/AIPI use the LEDC PWM pin (`set_backlight_brightness(0|100)`).
+  Do NOT try to put the panel controller to sleep or pause the LVGL refresh
+  timer from here: the BSP owns the panel handle and a paused refresh timer
+  would strand the DMA mid-flush on the Waveshare boards.
 - The button is polled from `interrupt_button_poll_task` in `main.cpp` (50 ms edge-detect), never a GPIO ISR: the press mutes the ES8311 over I2C and sends `response.cancel` over SCTP, none of which is ISR-safe (the old `IRAM_ATTR` handler rebooted on the 2.06 when `ESP_LOG` tried to take a recursive lock in interrupt context)
 - `oai_send_audio_task()` checks interruption flag every 50ms when interrupted
 - `oai_send_audio()` in media.cpp returns early if interrupted (no mic capture)

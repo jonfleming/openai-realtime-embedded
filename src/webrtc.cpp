@@ -34,9 +34,16 @@
   "{\"type\": \"response.create\", \"response\": {\"modalities\": " \
   "[\"audio\", \"text\"], \"instructions\": \"Say 'How can I help?.'\"}}"
 
+#define SYSTEM_PROMPT \
+  "You are a **helpful assistant**. You can **hear** through your speakers" \
+  " and **see** through your camera. Always **keep your replies brief**," \
+  " limiting them to **one to two sentences**."
+
 #define SESSION_UPDATE                                              \
   "{\"type\": \"session.update\", \"session\": {"              \
-  "\"type\": \"realtime\", \"audio\": {"                     \
+  "\"type\": \"realtime\", "                                 \
+  "\"instructions\": \"" SYSTEM_PROMPT "\", "                \
+  "\"audio\": {"                                             \
   "\"input\": {\"turn_detection\": {\"type\": \"server_vad\", " \
   "\"threshold\": 0.3, "                                      \
   "\"interrupt_response\": true}}}}}"

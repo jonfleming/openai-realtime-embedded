@@ -757,6 +757,23 @@ void lvgl_ui_battery_set_percent(int pct)
     lcd_disp_unlock();
 }
 
+// Turn the display backlight fully off or back on. Per-board backend:
+// - Waveshare AMOLED boards set brightness via a panel command through the
+//   BSP (0 % = panel dark; the BSP routes it over the same panel IO as the
+//   LVGL flush, hence the display lock).
+// - Freenove / AIPI-Lite use the LEDC PWM backlight pin (duty 0 = off).
+// The on-brightness matches what init_lvgl() sets for each board.
+void lvgl_ui_set_backlight(bool on)
+{
+    lcd_disp_lock();
+#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
+    bsp_display_brightness_set(on ? 85 : 0);
+#else
+    set_backlight_brightness(on ? 100 : 0);
+#endif
+    lcd_disp_unlock();
+}
+
 // Remove all accumulated message labels (WiFi/SSID status, transcripts) from
 // the container. Called once a conversation has started so the setup info is
 // no longer shown.

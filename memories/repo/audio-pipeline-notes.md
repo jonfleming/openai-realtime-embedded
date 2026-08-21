@@ -3,6 +3,20 @@
 Concise repo memory for confirmed audio fixes. Keep entries short: what changed,
 why it mattered, what symptom it fixed.
 
+## Display auto-off while Paused (battery saver)
+
+- **What:** `status_display_task` (main.cpp) turns the backlight off after the
+  device has been Paused for 10 s (`DISPLAY_AUTO_OFF_PAUSE_MS`) and back on
+  the instant the button returns to "Listening". Backend: `lvgl_ui_set_backlight()`
+  (lcd.cpp) — Waveshare `bsp_display_brightness_set(0|85)`, Freenove/AIPI
+  `set_backlight_brightness(0|100)`.
+- **Why:** while Paused the mic is muted and downlink audio is dropped, so the
+  screen shows nothing useful — killing the backlight extends battery life,
+  especially on the 2.06 watch.
+- **Do not** pause the LVGL refresh timer or sleep the panel controller from
+  here: the BSP owns the panel handle and a paused refresh timer strands the
+  DMA mid-flush on the Waveshare boards.
+
 ## AIPI-Lite: ES8311 scratchy/static audio — CONFIRMED FIX (CLK2 pre_mult)
 
 - **Symptom:** assistant audio sounds like static / missing bits. The codec was
