@@ -1,3 +1,5 @@
+#include <string.h>
+
 #ifndef LINUX_BUILD
 #include <opus.h>
 #endif
@@ -22,13 +24,16 @@
 // when present). Signaling still goes to OPENAI_REALTIMEAPI; only the media
 // path (ICE checks, DTLS, RTP, SCTP) is relayed through the TURN server.
 #ifndef TURN_SERVER_URL
-#define TURN_SERVER_URL "turn:turn.fleming.ai:3478"
+#define TURN_SERVER_URL "turn:turn.techion.net:3478"
 #endif
 #ifndef TURN_USERNAME
 #define TURN_USERNAME ""
 #endif
 #ifndef TURN_PASSWORD
 #define TURN_PASSWORD ""
+#endif
+#ifndef VOICE_ID
+#define VOICE_ID "Vivian"
 #endif
 #define GREETING                                                    \
   "{\"type\": \"response.create\", \"response\": {\"modalities\": " \
@@ -41,46 +46,32 @@
 #define HINDSIGHT_MCP_URL "https://hindsight.fleming.ai/mcp/Speech/"
 #endif
 
-#define MEMORY_PROMPT \
-  "\\n\\n# Tools\\n## recall\\nUse when:\\n" \
-  "- The user asks a question about themselves, past conversations, " \
-  "or preferences.\\n" \
-  "- At the very start of a new session to pull up context about " \
-  "who you are talking to.\\n" \
-  "\\n## retain\\nUse when:\\n" \
-  "- The user shares personal facts, preferences, interests, or " \
-  "explicit instructions (e.g., \\\"I prefer to be called Dave\\\", " \
-  "\\\"My birthday is in June\\\").\\n" \
-  "- Do NOT ask for permission before retaining a fact. Be proactive.\\n" \
-  "\\n## Tool Call Preambles\\n" \
-  "- Before calling any tool, say a brief filler phrase to mask " \
-  "execution latency (e.g., \\\"Let me look that up,\\\" " \
-  "\\\"Checking my memory,\\\" \\\"One moment\\\").\\n" \
-  "- After the tool returns, speak the result naturally in one or " \
-  "two sentences."
-
 #define SYSTEM_PROMPT \
   "You are a **helpful assistant**. You can **hear** through your speakers" \
   " and **see** through your camera. Always **keep your replies brief**," \
-  " limiting them to **one to two sentences**." MEMORY_PROMPT
+  " limiting them to **one to two sentences**."
 
-#define SESSION_UPDATE                                              \
-  "{\"type\": \"session.update\", \"session\": {"              \
-  "\"type\": \"realtime\", "                                 \
-  "\"voice\": \"vivian\", " \
-  "\"instructions\": \"" SYSTEM_PROMPT "\", "                \
-  "\"audio\": {"                                             \
-  "\"input\": {\"turn_detection\": {\"type\": \"server_vad\", " \
-  "\"threshold\": 0.3, "                                      \
-  "\"interrupt_response\": true}}}, "                        \
-  "\"tools\": [{"                                           \
-  "\"type\": \"mcp\", "                                     \
-  "\"server_label\": \"hindsight\", " \
-  "\"server_url\": \"" HINDSIGHT_MCP_URL "\", " \
-  "\"allowed_tools\": [\"recall\", \"retain\"]" \
-  "}]}}"
+#define MEMORY_PROMPT \
+  R"(\n\n# Tools\n## recall\nUse when:\n)" \
+  R"(- The user asks a question about themselves, past conversations, or preferences.\n)" \
+  R"(- At the very start of a new session to pull up context about who you are talking to.\n)" \
+  R"(\n## retain\nUse when:\n)" \
+  R"(- The user shares personal facts, preferences, interests, or explicit instructions (e.g., \"I prefer to be called Dave\", \"My birthday is in June\").\n)" \
+  R"(- Do NOT ask for permission before retaining a fact. Be proactive.\n)" \
+  R"(\n## Tool Call Preambles\n)" \
+  R"(- Before calling any tool, say a brief filler phrase to mask execution latency (e.g., \"Let me look that up,\" \"Checking my memory,\" \"One moment\").\n)" \
+  R"(- After the tool returns, speak the result naturally in one or two sentences.)"
 
-PeerConnection *peer_connection = NULL;
+#define SESSION_UPDATE \
+    R"JSON({"type":"session.update","session":{"type":"realtime","voice":")JSON" \
+    VOICE_ID \
+    R"JSON(","instructions":")JSON" \
+    SYSTEM_PROMPT \
+    R"JSON(","audio":{"input":{"turn_detection":{"type":"server_vad","threshold":0.3,"interrupt_response":true}}},"tools":[{"type":"mcp","server_label":"hindsight","server_url":")JSON" \
+    HINDSIGHT_MCP_URL \
+    R"JSON(","allowed_tools":["recall","retain"]}]}}})JSON"
+
+PeerConnection *peer_connection = NULL;  
 
 void parse_response(const char* json_str) {
   cJSON *root = cJSON_Parse(json_str);
@@ -139,11 +130,12 @@ static void oai_ondatachannel_onopen_task(void *userdata) {
     return;
   }
   ESP_LOGI(LOG_TAG, "DataChannel created");
-
+  
   int session_ret = peer_connection_datachannel_send(peer_connection,
                                                      (char *)SESSION_UPDATE,
                                                      strlen(SESSION_UPDATE));
   ESP_LOGI(LOG_TAG, "SESSION_UPDATE %s (%d bytes)", session_ret >= 0 ? "sent" : "failed", session_ret);
+  ESP_LOGI(LOG_TAG, "Payload: %s", SESSION_UPDATE);
 
   int greeting_ret = peer_connection_datachannel_send(peer_connection,
                                                       (char *)GREETING,

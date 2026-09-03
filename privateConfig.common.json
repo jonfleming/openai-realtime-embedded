@@ -2,7 +2,7 @@
     "wifi_ssid": "tailnet",
     "wifi_password": "GL.Amicus.44",
     "openai_api_key": "llama",
-    "turn_server": "turn:turn.fleming.ai:3478",
+    "turn_server": "turn:turn.techion.net:3478",
     "turn_username": "realtime",
     "turn_password": "Amicus.44"
 }

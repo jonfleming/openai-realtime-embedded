@@ -373,8 +373,8 @@ Preserve and document any local deltas. Especially keep:
 ## TURN Relay (coturn) — WebRTC Media Path
 
 - Signaling is unchanged: the SDP offer/answer still goes over HTTP to
-  `OPENAI_REALTIMEAPI` (e.g. `https://speech.fleming.ai/v1/realtime`). The
-  coturn server at `turn.fleming.ai` (UDP 3478/5349 + relay range
+  `OPENAI_REALTIMEAPI` (e.g. `https://speech.techion.net/v1/realtime`). The
+  coturn server at `turn.techion.net` (UDP 3478/5349 + relay range
   49152-65535) is used for the WebRTC media path (ICE checks, DTLS, RTP,
   SCTP).
 - TURN credentials are long-term (`lt-cred-mech` style): username + password
@@ -408,7 +408,7 @@ Preserve and document any local deltas. Especially keep:
 - TLS: `sdkconfig.defaults` enables the full ESP-IDF cert bundle (`CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y`).
   Do NOT enable `CONFIG_ESP_TLS_INSECURE` / `CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY`, and do NOT set
   `config.skip_cert_common_name_check = true` in `oai_http_request()`: in IDF 5.5 that disables SNI
-  entirely, and `speech.fleming.ai` rejects SNI-less handshakes with a fatal alert
+  entirely, and `speech.techion.net` rejects SNI-less handshakes with a fatal alert
   (`mbedtls_ssl_handshake returned -0x7780`, ESP_ERR_HTTP_CONNECT).
 
 ## Validation Checklist After Changes
