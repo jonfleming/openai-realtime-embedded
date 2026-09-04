@@ -72,7 +72,8 @@ else()
   set(ENV{FREEBUFF_BOARD} "waveshare_amoled_1_8")
 endif()
 
-add_compile_definitions(OPENAI_REALTIMEAPI="https://speech.techion.net/v1/realtime")
+add_compile_definitions(OPENAI_REALTIMEAPI="https://speech.fleming.ai/v1/realtime")
+# add_compile_definitions(OPENAI_REALTIMEAPI="http://100.120.84.114:8765/v1/realtime")
 
 # TURN relay server for WebRTC/ICE media. The URL is public; the username and
 # password (coturn long-term credentials) come from the gitignored

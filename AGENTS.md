@@ -383,11 +383,12 @@ Preserve and document any local deltas. Especially keep:
   the TURN allocation and uses only host/STUN candidates.
 - Vendored libpeer (`deps/libpeer`) is patched to be a functional TURN UDP
   client: it allocates a relay, installs CreatePermission for every remote
-  candidate IP, wraps all outbound packets to relay candidates in Send
-  Indications, unwraps inbound Data Indications, and refreshes the allocation
+  candidate IP, wraps outbound packets through a local relay in Send
+  Indications (or sends direct UDP onto a remote relay address), unwraps
+  inbound Data Indications and ChannelData, and refreshes the allocation
   + permissions every 5 minutes from the peer loop. These are deliberate
   local deltas — see `deps/libpeer/src/agent.c` (`agent_turn_*`) and
-  `stun.c` (`stun_msg_parse_data_indication`).
+  `stun.c` (`stun_msg_parse_data_indication`, `turn_channel_data_unwrap`).
 - Do not "simplify" the TURN path back to plain `agent_socket_send`: a remote
   relay candidate is only reachable through our allocation, and raw binding
   requests to the relayed address get 401 from coturn (upstream libpeer
@@ -395,9 +396,20 @@ Preserve and document any local deltas. Especially keep:
 - Both peers must share the same TURN server for relay-to-relay media. The
   aiortc speech server needs `iceServers` with the same turn URL/credentials;
   the client alone is not enough when both sides are behind NAT.
-- Limitations: UDP only (no `turns:`/TLS, no TCP, no ChannelData/ChannelBind,
-  no STUN binding over the relay for ice-lite fallback). Opus frames and SCTP
-  packets fit well under the 1300-byte MTU.
+- coturn returns `403 Forbidden IP` for CreatePermission/ChannelBind to its
+  own public IP (TURN hairpin) unless `turnserver.conf` contains
+  `allowed-peer-ip=<coturn public IP>` (and that IP is not in `denied-peer-ip`).
+  Without that, remote ESP32 ICE cannot use relay-to-relay.
+- `SPEECH_TO_SPEECH_ICE_ADDRESSES` on the speech server must be the LAN NIC
+  that NATs to the public internet (e.g. `192.168.0.112`), not Tailscale
+  `100.x`. Tailscale-only host gathering yields no public srflx candidate.
+- DTLS: mbedtls cookie HelloVerify is disabled. A cookie round-trip sent on
+  a TURN-nominated pair is lost and the handshake reports `CONN_EOF`
+  (`-0x6c00`) with "no remote fingerprint". ICE pair order prefers
+  host-host so same-LAN boards do not nominate TURN for DTLS.
+- Limitations: UDP only (no `turns:`/TLS, no TCP, no ChannelBind from the
+  device; inbound ChannelData and Data Indications are unwrapped). Opus
+  frames and SCTP packets fit well under the 1300-byte MTU.
 
 ## Security and Secrets
 
