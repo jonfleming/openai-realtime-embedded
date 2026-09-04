@@ -71,7 +71,12 @@
     HINDSIGHT_MCP_URL \
     R"JSON(","allowed_tools":["recall","retain"]}]}}})JSON"
 
-PeerConnection *peer_connection = NULL;  
+PeerConnection *peer_connection = NULL;
+static volatile bool s_voice_ready = false;
+
+bool oai_is_voice_ready(void) {
+  return s_voice_ready;
+}  
 
 void parse_response(const char* json_str) {
   cJSON *root = cJSON_Parse(json_str);
@@ -172,6 +177,8 @@ static void oai_onconnectionstatechange_task(PeerConnectionState state,
 #endif
   } else if (state == PEER_CONNECTION_COMPLETED) {
 #ifndef LINUX_BUILD
+    // Mic uplink starts here; this is the first moment voice input works.
+    s_voice_ready = true;
     // Conversation is live: the WiFi/SSID setup text on screen is no longer
     // relevant, so clear it (the mode indicator stays via status_display_task).
     lvgl_ui_clear_messages();

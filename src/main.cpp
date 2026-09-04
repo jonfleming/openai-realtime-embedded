@@ -127,10 +127,10 @@ void oai_set_interrupted(bool interrupted) {
 // "Listening" (see status_display_task below).
 #define DISPLAY_AUTO_OFF_PAUSE_MS (10 * 1000)
 
-// Reflect the conversation mode on the display ("Listening" / "Paused").
-// Runs as its own task so the LVGL update always happens in task context --
-// never from the button ISRs on the 2.06/AIPI/Freenove boards -- and works
-// uniformly on every board. Initial state is "Listening".
+// Reflect the conversation mode on the display ("Connecting" until WebRTC is
+// up, then "Listening" / "Paused"). Runs as its own task so the LVGL update
+// always happens in task context -- never from the button ISRs on the
+// 2.06/AIPI/Freenove boards -- and works uniformly on every board.
 //
 // Also handles the display auto-off: once the device has been Paused for
 // DISPLAY_AUTO_OFF_PAUSE_MS the backlight is turned off (the screen is
@@ -138,19 +138,25 @@ void oai_set_interrupted(bool interrupted) {
 // back on immediately when the button restores "Listening".
 static void status_display_task(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(300)); // let lvgl_ui() finish building the screen
-    bool last = false;
+    bool last_interrupted = false;
+    bool last_ready = false;
+    bool first = true;
     bool backlight_off = false;
     TickType_t paused_since = 0;
-    lvgl_ui_status_set_text("Listening");
+    lvgl_ui_status_set_text("Connecting");
     while (1) {
         bool interrupted = oai_is_interrupted();
-        if (interrupted != last) {
-            lvgl_ui_status_set_text(interrupted ? "Paused" : "Listening");
-            last = interrupted;
+        bool ready = oai_is_voice_ready();
+        if (first || interrupted != last_interrupted || ready != last_ready) {
+            const char *text = interrupted ? "Paused" : (ready ? "Listening" : "Connecting");
+            lvgl_ui_status_set_text(text);
+            first = false;
+            last_interrupted = interrupted;
+            last_ready = ready;
             if (interrupted) {
                 paused_since = xTaskGetTickCount();
             } else if (backlight_off) {
-                // Back to "Listening": wake the display immediately.
+                // Left Paused: wake the display immediately.
                 lvgl_ui_set_backlight(true);
                 backlight_off = false;
             }
@@ -158,7 +164,7 @@ static void status_display_task(void *pvParameters) {
         // Paused for a while and still off: kill the backlight once, then
         // wait for the next state change (the 100 ms poll adds <100 ms jitter
         // to the 10 s threshold, which is irrelevant here).
-        if (last && !backlight_off &&
+        if (last_interrupted && !backlight_off &&
             (xTaskGetTickCount() - paused_since) >= pdMS_TO_TICKS(DISPLAY_AUTO_OFF_PAUSE_MS)) {
             lvgl_ui_set_backlight(false);
             backlight_off = true;

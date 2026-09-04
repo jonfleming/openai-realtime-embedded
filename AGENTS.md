@@ -107,6 +107,12 @@ L/R PCM and downmix to mono before Opus encode. The 1.8 path stays mono 16
 kHz. `esp_codec_dev` reconfigures the shared I2S slot/clock on open, so the
 BSP's mono 22050 Hz default is harmless.
 
+The 2.06 has no AEC. While `oai_audio_decode()` is writing to the ES8311
+(plus `SPEAKER_MIC_MUTE_HOLD_MS` 300 ms after the last frame),
+`oai_send_audio()` still reads the ES7210 so the shared I2S DMA does not
+overflow, but replaces the Opus uplink with silence. Server VAD / barge-in
+cannot interrupt playback; press BOOT (GPIO0) to pause and `response.cancel`.
+
 Display init (`src/lcd.cpp`) replicates `bsp_display_start()` with public BSP
 APIs (touch probe retried, never fatal) and uses this project's proven
 LVGL buffer convention (DMA buffer, `sw_rotate=false`, 20 rows) instead of the
@@ -256,6 +262,8 @@ When the device is in an active conversation with the speech-to-speech backend, 
    - Stops any currently playing audio response
    - Disables microphone capture (no more Opus packets sent to server)
    - All incoming WebRTC audio from server is ignored
+   - On the 2.06 this is the way to stop playback: speaker-to-mic echo
+     is muted in software, so server VAD cannot barge-in while TTS plays
 
 2. **Second press** - Returns to normal operation:
    - Resume normal question/answer conversation
@@ -274,6 +282,9 @@ When the device is in an active conversation with the speech-to-speech backend, 
 ### Implementation Details
 
 - Interrupt state is shared globally (`s_interrupted` in `main.cpp`)
+- Status text is "Connecting" (amber) until `PEER_CONNECTION_COMPLETED`, then
+  "Listening" (green) / "Paused" (red). Do not show "Listening" during ICE/DTLS
+  — the mic uplink task has not started yet.
 - **Display auto-off while paused (battery saver)**: `status_display_task` in
   `main.cpp` kills the backlight once the device has been Paused for 10 s
   (`DISPLAY_AUTO_OFF_PAUSE_MS`) — the mic is muted and server audio is

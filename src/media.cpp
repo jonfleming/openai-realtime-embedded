@@ -1,5 +1,6 @@
 #include <driver/i2s_std.h>
 #include <driver/gpio.h>
+#include <string.h>
 #include <opus.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
@@ -102,6 +103,25 @@ static i2s_chan_handle_t s_i2s_rx_chan = NULL;
 #if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
 static esp_codec_dev_handle_t s_spk_codec_dev = NULL;
 static esp_codec_dev_handle_t s_mic_codec_dev = NULL;
+#endif
+
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+// The 2.06 watch has no acoustic echo cancellation. Speaker output couples
+// into the ES7210 mics and the server VAD treats it as the user talking.
+// While the DAC is playing (plus a hangover after the last frame so body/
+// room echo dies), replace the uplink with silence. That disables barge-in
+// during playback; press BOOT (GPIO0) to cancel the response instead.
+#define SPEAKER_MIC_MUTE_HOLD_MS 300
+static volatile TickType_t s_speaker_last_play_tick = 0;
+static bool s_mic_held_for_speaker = false;
+
+static bool oai_speaker_holds_mic(void) {
+  TickType_t last = s_speaker_last_play_tick;
+  if (last == 0) {
+    return false;
+  }
+  return (xTaskGetTickCount() - last) < pdMS_TO_TICKS(SPEAKER_MIC_MUTE_HOLD_MS);
+}
 #endif
 
 // ESP32-S3 has no APLL for I2S; PLL_160M gives MCLK within ~0.16% of
@@ -415,6 +435,7 @@ void oai_audio_decode(uint8_t *data, size_t size) {
       // the decoded stereo frame goes straight to the codec device.
       esp_codec_dev_write(s_spk_codec_dev, output_buffer,
                           decoded_size * SPK_CHANNELS * sizeof(opus_int16));
+      s_speaker_last_play_tick = xTaskGetTickCount();
     }
 #elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
     if (s_spk_codec_dev != NULL && output_buffer_mono != NULL) {
@@ -583,6 +604,22 @@ void oai_send_audio(PeerConnection *peer_connection) {
   for (int i = 0; i < samples_read; ++i) {
     int32_t s = (int32_t)((int32_t)stereo32[i * 2 + (use_left ? 0 : 1)] >> 16) * MIC_GAIN;
     encoder_input_buffer[i] = s > 32767 ? 32767 : (s < -32768 ? -32768 : (int16_t)s);
+  }
+#endif
+
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+  // Keep draining the ES7210 (the read above) so the shared I2S DMA does not
+  // overflow, but send silence while the speaker is live so TTS is not
+  // transcribed as user speech.
+  if (oai_speaker_holds_mic()) {
+    if (!s_mic_held_for_speaker) {
+      ESP_LOGI("Media", "Mic uplink silenced while speaker plays (no AEC; BOOT cancels playback)");
+      s_mic_held_for_speaker = true;
+    }
+    memset(encoder_input_buffer, 0, samples_read * sizeof(opus_int16));
+  } else if (s_mic_held_for_speaker) {
+    ESP_LOGI("Media", "Mic uplink resumed");
+    s_mic_held_for_speaker = false;
   }
 #endif
 

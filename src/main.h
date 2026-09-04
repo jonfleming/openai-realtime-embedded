@@ -20,3 +20,5 @@ void oai_stop_audio_playback(void);
 void oai_resume_audio_playback(void);
 void oai_send_interrupt(void);
 void oai_start_silence_pump(void);  // Freenove/AIPI: silence the TX DMA while interrupted
+// True once ICE+DTLS+SCTP have finished and the mic uplink task is running.
+bool oai_is_voice_ready(void);

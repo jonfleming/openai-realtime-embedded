@@ -113,9 +113,10 @@ typedef struct {
 
 lvgl_screen_t lvgl_screen;
 
-// Persistent mode indicator ("Listening" / "Paused"), created lazily on the
-// first status update and reused thereafter so the text never accumulates as
-// a new widget the way lvgl_ui_label_set_text() does for log messages.
+// Persistent mode indicator ("Connecting" / "Listening" / "Paused"), created
+// lazily on the first status update and reused thereafter so the text never
+// accumulates as a new widget the way lvgl_ui_label_set_text() does for log
+// messages.
 static lv_obj_t *status_label = NULL;
 
 // Battery indicator (bottom of screen): a horizontal bar filled with green
@@ -685,7 +686,7 @@ void lvgl_ui(void)
 
 // Show the current conversation mode at the top of the screen. The label is
 // created once and its text/color updated on each call, so it never scrolls
-// or duplicates. "Paused" is shown in red, anything else ("Listening") in
+// or duplicates. "Paused" is red, "Connecting" is amber, "Listening" is
 // green. Must be called from task context (holds the LVGL lock internally).
 void lvgl_ui_status_set_text(const char *text)
 {
@@ -703,6 +704,8 @@ void lvgl_ui_status_set_text(const char *text)
     lv_label_set_text(status_label, text);
     if (strcmp(text, "Paused") == 0) {
         lv_obj_set_style_text_color(status_label, lv_color_hex(0xE53935), LV_PART_MAIN); // red
+    } else if (strcmp(text, "Connecting") == 0) {
+        lv_obj_set_style_text_color(status_label, lv_color_hex(0xF9A825), LV_PART_MAIN); // amber
     } else {
         lv_obj_set_style_text_color(status_label, lv_color_hex(0x2E7D32), LV_PART_MAIN); // green
     }
