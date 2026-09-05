@@ -14,7 +14,7 @@ else()
 		# deps and is absent on the 2.06 board, so it must not be listed here.
 		# esp_adc is only used by the Freenove/AIPI-Lite battery ADC path; it is
 		# harmless on the Waveshare boards.
-		REQUIRES driver esp_wifi nvs_flash peer esp_psram esp-libopus esp_http_client esp_https_server json esp_lcd_touch esp_adc)
+		REQUIRES driver esp_wifi esp_netif nvs_flash peer esp_psram esp-libopus esp_http_client esp_https_server json esp_lcd_touch esp_adc)
 endif()
 
 idf_component_get_property(lib peer COMPONENT_LIB)

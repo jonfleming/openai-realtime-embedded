@@ -87,10 +87,9 @@ why it mattered, what symptom it fixed.
 - **Symptom:** Waveshare 1.8 "reboots after entering WiFi info" when the
   stored network is unavailable (trace showed clean `rst:0xc RTC_SW_CPU_RST`
   from `esp_restart()`, not a crash).
-- **Fix (`src/wifi_config.cpp`):** on connect failure, stop STA, destroy the
-  STA netif, and return to the AP portal in-place instead of
-  `clear_nvs_config(); esp_restart();`. Saved config is kept, so a later boot
-  with an available network still connects first try.
+- **Fix (`src/wifi_config.cpp`):** SoftAP + settings page stay up in AP+STA
+  for the life of the app. Connect failure no longer wipes NVS or reboots;
+  the portal at 192.168.4.1 remains reachable and STA is retried.
 - **Why it mattered:** the old fail-fast wipe+reboot locked the user out of
   their credentials and reboot-looped on an unreachable network.
 

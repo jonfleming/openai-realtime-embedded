@@ -7,6 +7,10 @@
 #include <freertos/task.h>
 
 #include "main.h"
+#include "wifi_config.h"
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+#include "es8311.h"
+#endif
 
 #if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
 // 2.06 watch board: ES8311 codec for the speaker + ES7210 ADC for the dual
@@ -88,7 +92,10 @@
 
 #define OPUS_ENCODER_BITRATE 32000
 #define OPUS_ENCODER_COMPLEXITY 2
-#define MIC_GAIN 7  // linear gain applied before encode; 4 = +12 dB; increase if VAD still misses speech
+// Runtime copies of NVS settings. MIC_GAIN used to be a compile-time 7
+// (12 on AIPI-Lite). Updated from the SoftAP settings page without a rebuild.
+static volatile int s_mic_gain = WIFI_CFG_DEFAULT_MIC_GAIN;
+static volatile int s_speaker_vol = WIFI_CFG_DEFAULT_SPEAKER_VOL;
 
 #if defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
 // Linear gain applied to the averaged L+R downmix before the mono speaker.
@@ -144,6 +151,48 @@ static bool oai_speaker_holds_mic(void) {
 // 256*fs, which the ES8311 tolerates (same as the official i2s_es8311 example).
 static constexpr i2s_clock_src_t MIC_CLK_SRC = I2S_CLK_SRC_DEFAULT;
 static constexpr const char* MIC_CLK_SRC_NAME = "DEFAULT";
+
+void oai_apply_audio_settings(int speaker_vol, int mic_gain)
+{
+  if (speaker_vol < WIFI_CFG_SPEAKER_VOL_MIN) {
+    speaker_vol = WIFI_CFG_SPEAKER_VOL_MIN;
+  } else if (speaker_vol > WIFI_CFG_SPEAKER_VOL_MAX) {
+    speaker_vol = WIFI_CFG_SPEAKER_VOL_MAX;
+  }
+  if (mic_gain < WIFI_CFG_MIC_GAIN_MIN) {
+    mic_gain = WIFI_CFG_MIC_GAIN_MIN;
+  } else if (mic_gain > WIFI_CFG_MIC_GAIN_MAX) {
+    mic_gain = WIFI_CFG_MIC_GAIN_MAX;
+  }
+  s_speaker_vol = speaker_vol;
+  s_mic_gain = mic_gain;
+
+#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
+  if (s_spk_codec_dev != NULL) {
+    esp_codec_dev_set_out_vol(s_spk_codec_dev, speaker_vol);
+  }
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+  // Analog ES7210 gain stays at the Waveshare default; the user knob is the
+  // digital s_mic_gain applied before Opus. Do not drive REG-style analog
+  // gain from the portal — that path is board-specific and easy to clip.
+  if (s_mic_codec_dev != NULL) {
+    esp_codec_dev_set_in_gain(s_mic_codec_dev, 24.0);
+  }
+#endif
+#elif defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+  // DAC_REG32 only. Do not call es8311_set_mic_gain: REG16 must stay 0x00.
+  es8311_set_volume(speaker_vol);
+#endif
+  ESP_LOGI("Media", "Audio settings applied: vol=%d mic_gain=%d", speaker_vol, mic_gain);
+}
+
+void oai_apply_audio_settings_from_nvs(void)
+{
+  wifi_config_data_t cfg;
+  wifi_config_apply_defaults(&cfg);
+  read_wifi_config_from_nvs(&cfg);
+  oai_apply_audio_settings(cfg.speaker_vol, cfg.mic_gain);
+}
 
 void oai_init_audio_capture() {
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
@@ -254,19 +303,11 @@ void oai_init_audio_capture() {
   }
   // Codec volume: the codec-dev default curve maps 0-100 to -50..0 dB, and
   // the uninitialized dev->volume starts at 0 (-50 dB) until set here.
-#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
-  // 2.06: volume 60 on the codec-dev curve is -20 dB (≈ -16 dB effective at
-  // the DAC after the BSP's PA compensation), which is far too quiet on the
-  // watch speaker. Use 100 = 0 dB (≈ +3.6 dB effective), same as the 1.8
-  // board. Also set the ES7210 ADC gain (24 dB, the Waveshare example's
-  // CODEC_DEFAULT_ADC_VOLUME).
-  esp_codec_dev_set_out_vol(s_spk_codec_dev, 100);
-  esp_codec_dev_set_in_gain(s_mic_codec_dev, 24.0);
-  ESP_LOGI("Media", "OAI Audio Capture Initialized (BSP codec, 16 kHz stereo in/out, vol=100)");
-#else
-  esp_codec_dev_set_out_vol(s_spk_codec_dev, 100);
-  ESP_LOGI("Media", "OAI Audio Capture Initialized (BSP codec, 16 kHz mono in/out, vol=100)");
-#endif
+  // 2.06: volume 60 is -20 dB and far too quiet; default NVS value is 100
+  // (0 dB). Analog ES7210 gain stays 24 dB; digital mic gain comes from NVS.
+  oai_apply_audio_settings_from_nvs();
+  ESP_LOGI("Media", "OAI Audio Capture Initialized (BSP codec, 16 kHz, vol=%d mic_gain=%d)",
+           s_speaker_vol, s_mic_gain);
   return;
 #else
   i2s_chan_config_t tx_chan_cfg =
@@ -382,6 +423,7 @@ void oai_init_audio_capture() {
            MIC_BYTES_PER_SLOT * 8,
            MIC_I2S_CHANNELS,
            MIC_SAMPLE_RATE * MIC_I2S_CHANNELS * MIC_BYTES_PER_SLOT * 8);
+  oai_apply_audio_settings_from_nvs();
   ESP_LOGI("Media","OAI Audio Capture Initialized");
 }
 
@@ -425,6 +467,21 @@ void oai_audio_decode(uint8_t *data, size_t size) {
       return;
     }
     size_t bytes_written = 0;
+#if !defined(WAVESHARE_BSP_BOARD) || !WAVESHARE_BSP_BOARD
+    // Freenove has no codec volume register. AIPI uses es8311_set_volume
+    // (DAC_REG32); scaling here as well would double-attenuate, so AIPI is
+    // excluded. Digital scale is Freenove-only.
+#if !defined(AIPI_LITE_BOARD) || !AIPI_LITE_BOARD
+    {
+      int vol = s_speaker_vol;
+      if (vol < 100) {
+        for (int i = 0; i < decoded_size * SPK_CHANNELS; ++i) {
+          output_buffer[i] = (opus_int16)(((int32_t)output_buffer[i] * vol) / 100);
+        }
+      }
+    }
+#endif
+#endif
     if (s_i2s_tx_chan != NULL) {
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
       // Left-align the 16-bit samples in the 32-bit slots (the same wire
@@ -565,7 +622,7 @@ void oai_send_audio(PeerConnection *peer_connection) {
 #if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
   // ES7210 dual digital mics: 16-bit stereo PCM (L/R interleaved) at 16 kHz.
   // Average L+R (same as the Waveshare Spec_Analyzer example), then apply
-  // the MIC_GAIN headroom like the other boards.
+  // the configured mic-gain headroom like the other boards.
   int16_t* s16 = (int16_t*)(void*)encoder_capture_buffer;
   const char* ch_str = "L+R";
   int64_t left_energy = 0, right_energy = 0;
@@ -576,24 +633,24 @@ void oai_send_audio(PeerConnection *peer_connection) {
     right_energy += (int64_t)r * r;
   }
   for (int i = 0; i < samples_read; ++i) {
-    int32_t s = (((int32_t)s16[i * 2] + (int32_t)s16[i * 2 + 1]) >> 1) * MIC_GAIN;
+    int32_t s = (((int32_t)s16[i * 2] + (int32_t)s16[i * 2 + 1]) >> 1) * s_mic_gain;
     encoder_input_buffer[i] = s > 32767 ? 32767 : (s < -32768 ? -32768 : (int16_t)s);
   }
 #elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
   // Plain 16-bit mono PCM straight from the codec (channel 0 of the shared
-  // bus). Apply the same MIC_GAIN headroom as the other boards.
+  // bus). Apply the same configured mic-gain headroom as the other boards.
   int16_t* s16 = (int16_t*)(void*)encoder_capture_buffer;
   const char* ch_str = "M";
   int64_t left_energy = 0, right_energy = 0;
   for (int i = 0; i < samples_read; ++i) {
     left_energy += (int64_t)s16[i] * s16[i];
-    int32_t s = (int32_t)s16[i] * MIC_GAIN;
+    int32_t s = (int32_t)s16[i] * s_mic_gain;
     encoder_input_buffer[i] = s > 32767 ? 32767 : (s < -32768 ? -32768 : (int16_t)s);
   }
 #elif defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
   // 32-bit slots with audio in the upper 16 bits (ES8311 16-bit
   // left-aligned). Mirror the proven Arduino sketch: sum L+R (the codec
-  // sends the mono mic on both slots), then scale to 16-bit with 12x gain.
+  // sends the mono mic on both slots), then scale to 16-bit with mic gain.
   int32_t* s32 = (int32_t*)(void*)encoder_capture_buffer;
   const char* ch_str = "L+R";
   int64_t left_energy = 0, right_energy = 0;
@@ -604,7 +661,7 @@ void oai_send_audio(PeerConnection *peer_connection) {
     right_energy += (int64_t)r * r;
   }
   for (int i = 0; i < samples_read; ++i) {
-    int32_t s = ((int32_t)(s32[i * 2] >> 16) + (int32_t)(s32[i * 2 + 1] >> 16)) * 12;
+    int32_t s = ((int32_t)(s32[i * 2] >> 16) + (int32_t)(s32[i * 2 + 1] >> 16)) * s_mic_gain;
     encoder_input_buffer[i] = s > 32767 ? 32767 : (s < -32768 ? -32768 : (int16_t)s);
   }
 #else
@@ -620,7 +677,7 @@ void oai_send_audio(PeerConnection *peer_connection) {
   bool use_left = (left_energy >= right_energy);
   const char* ch_str = use_left ? "L" : "R";
   for (int i = 0; i < samples_read; ++i) {
-    int32_t s = (int32_t)((int32_t)stereo32[i * 2 + (use_left ? 0 : 1)] >> 16) * MIC_GAIN;
+    int32_t s = (int32_t)((int32_t)stereo32[i * 2 + (use_left ? 0 : 1)] >> 16) * s_mic_gain;
     encoder_input_buffer[i] = s > 32767 ? 32767 : (s < -32768 ? -32768 : (int16_t)s);
   }
 #endif

@@ -3,10 +3,26 @@
 #define LOG_TAG "realtimeapi-sdk"
 #define MAX_HTTP_OUTPUT_BUFFER 2048
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Voice Assistant app entry. Never returns. Used by the standalone
+// firmware and by watch-os after a start-menu selection.
+void voice_assistant_run(void);
+
+#ifdef __cplusplus
+}
+#endif
+
 void oai_wifi(void);
 void oai_init_audio_capture(void);
 void oai_init_audio_decoder(void);
 void oai_init_audio_encoder();
+// Apply speaker volume (0..100) and digital mic gain (1..16) immediately.
+// Safe to call before or after codec init; board-specific writes no-op until ready.
+void oai_apply_audio_settings(int speaker_vol, int mic_gain);
+void oai_apply_audio_settings_from_nvs(void);
 void oai_send_audio(PeerConnection *peer_connection);
 void oai_audio_decode(uint8_t *data, size_t size);
 void oai_webrtc();

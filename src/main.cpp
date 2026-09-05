@@ -24,6 +24,13 @@
 
 static const char *TAG = "Main";
 
+// Strong definition in watch-os; no-op when this firmware is flashed alone.
+extern "C" void app_select_request_menu(void) __attribute__((weak));
+
+#ifndef HOME_BUTTON_LONG_PRESS_MS
+#define HOME_BUTTON_LONG_PRESS_MS 1500
+#endif
+
 // Log the board configuration at startup
 #if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
 static const char *BOARD_TAG = "Waveshare 2.06";
@@ -77,16 +84,33 @@ static void interrupt_button_poll_task(void *pvParameters) {
     ESP_LOGI(TAG, "Interrupt button polling started (%s GPIO %d)", BOARD_TAG, INTERRUPT_BUTTON_PIN);
 
     bool last_state = gpio_get_level((gpio_num_t)INTERRUPT_BUTTON_PIN);
+    bool pressed = false;
+    bool long_sent = false;
+    TickType_t down_tick = 0;
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(50)); // poll every 50 ms
 
         bool current_state = gpio_get_level((gpio_num_t)INTERRUPT_BUTTON_PIN);
 
-        // Negative edge: the button press drives the pin LOW.
+        // Active-low: press drives the pin LOW. Short release toggles
+        // interrupt; a hold of HOME_BUTTON_LONG_PRESS_MS returns to the
+        // watch-os start menu (no-op when flashed standalone).
         if (last_state == 1 && current_state == 0) {
-            s_interrupted = !s_interrupted; // toggle state
+            pressed = true;
+            long_sent = false;
+            down_tick = xTaskGetTickCount();
+        } else if (pressed && !long_sent && current_state == 0 &&
+                   (xTaskGetTickCount() - down_tick) >= pdMS_TO_TICKS(HOME_BUTTON_LONG_PRESS_MS)) {
+            long_sent = true;
+            ESP_LOGI(TAG, "Long-press A: return to start menu");
+            if (app_select_request_menu) {
+                app_select_request_menu();
+            }
+        } else if (last_state == 0 && current_state == 1 && pressed && !long_sent) {
+            pressed = false;
+            s_interrupted = !s_interrupted;
 
-            ESP_LOGI(TAG, "Interrupt button pressed: %s",
+            ESP_LOGI(TAG, "Interrupt button short press: %s",
                      s_interrupted ? "INTERRUPTION START" : "NORMAL MODE");
 
             if (s_interrupted) {
@@ -95,6 +119,8 @@ static void interrupt_button_poll_task(void *pvParameters) {
             } else {
                 oai_resume_audio_playback();
             }
+        } else if (current_state == 1) {
+            pressed = false;
         }
 
         last_state = current_state;
@@ -192,7 +218,7 @@ static void battery_display_task(void *pvParameters) {
 // Stop audio playback (speaker)
 extern void oai_stop_audio_playback(void);
 
-extern "C" void app_main(void) {
+extern "C" void voice_assistant_run(void) {
   esp_err_t ret = nvs_flash_init();
   if (ret == ESP_ERR_NVS_NO_FREE_PAGES ||
       ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -228,6 +254,8 @@ extern "C" void app_main(void) {
   // Configure the ES8311 codec over I2C for the shared 16 kHz I2S bus.
   if (es8311_init() != ESP_OK) {
     ESP_LOGE(TAG, "ES8311 codec init failed - audio will not work");
+  } else {
+    oai_apply_audio_settings_from_nvs();
   }
 #endif
 
@@ -257,6 +285,12 @@ extern "C" void app_main(void) {
   wifi_config_init();
   oai_webrtc();
 }
+
+#ifndef WATCH_OS_SHELL
+extern "C" void app_main(void) {
+  voice_assistant_run();
+}
+#endif
 #else
 int main(void) {
   ESP_ERROR_CHECK(esp_event_loop_create_default());

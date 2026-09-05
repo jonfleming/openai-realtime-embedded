@@ -303,28 +303,39 @@ When the device is in an active conversation with the speech-to-speech backend, 
 - Audio playback is gated by `oai_is_interrupted()`: `oai_audio_decode()` drops downlink frames while interrupted (mic uplink is already gated by `oai_send_audio()`). On the Waveshare boards `oai_stop_audio_playback()` also mutes the BSP codec DAC (`esp_codec_dev_set_out_mute`) — never `esp_codec_dev_close()`, which would disable the shared full-duplex I2S channel and kill the mic. Never disable/enable the I2S TX channel to "pause" on Freenove/AIPI: the decoder is blocked in `i2s_channel_write(..., portMAX_DELAY)` and the channel toggle races it and reboots the board.
 - **Freenove/AIPI speaker buzz on interrupt (the "repeating last frame" noise) — the real fix is the silence pump, not `auto_clear`.** `tx_chan_cfg.auto_clear = true` is set on both the Freenove and AIPI TX channels, but it is NOT sufficient on the ESP32-S3: `auto_clear` (alias of `auto_clear_after_cb`) only zeroes DMA buffers that pass through the TX_EOF callback, and a mid-write underrun can leave the GDMA stuck re-sending a live buffer that never gets zeroed — so the speaker buzzes until the button is pressed again. The guaranteed fix is `oai_silence_pump_task` in `src/media.cpp` (started via `oai_start_silence_pump()` from `oai_init_interrupt_button()`): while interrupted it writes one zero 20 ms frame per 20 ms to the TX channel, so the DMA never underruns in the first place. It is the sole writer while interrupted (the decode path returns early), and `i2s_channel_write` serializes on the channel's internal binary semaphore, so the brief overlap on enter/exit of interrupt mode is safe (no channel enable/disable).
 
-## WiFi Configuration (AP Portal)
+## WiFi Configuration (AP+STA portal)
 
-`wifi_config_init()` in `src/wifi_config.cpp` runs synchronously at startup:
+`wifi_config_init()` in `src/wifi_config.cpp` runs synchronously at startup
+and leaves **both** the SoftAP and the settings HTTP server up for the life
+of the app (`WIFI_MODE_APSTA`). Join `OpenAI` and open `http://192.168.4.1`
+any time — including after a successful STA connection.
 
-- No saved config → starts the SoftAP portal (`OpenAi` / `192.168.4.1`), waits
-  for credentials, saves to NVS (`wifi_config` namespace), then `esp_restart()`
-  to apply them. That reboot after submitting the form is expected.
-- Saved config → `start_wifi_sta()` tries to connect (10 s timeout, up to 5
-  internal retries via `on_got_ip`). On success it proceeds to `oai_webrtc()`.
-- **On connect failure the device now returns to AP config mode in-place**
-  (stops STA, destroys the STA netif, starts the portal again) instead of
-  wiping NVS and rebooting into a loop. The saved config is kept, so a later
-  boot with an available network still connects on the first try. This was
-  the Waveshare 1.8 "reboots after entering WiFi info" report: the trace
-  showed a clean `esp_restart()` (`rst:0xc RTC_SW_CPU_RST`), not a crash.
+- NVS namespace `wifi_config` stores `ssid`, `password`, `openai_key`,
+  `spk_vol` (0–100, default 100), and `mic_gain` (1–16, default 7; 12 on
+  AIPI-Lite). Volume/gain apply immediately via `oai_apply_audio_settings()`.
+  Changing SSID/password/API key after the voice session has started writes
+  NVS and `esp_restart()` so WebRTC picks them up.
+- No saved SSID → AP + portal only; init blocks until the form is submitted
+  and STA gets an IP. No reboot is required on that first save.
+- Saved SSID → STA connects in the background while the AP stays up. On
+  failure the portal remains reachable; STA is retried every ~15 s. Do **not**
+  wipe NVS or destroy the STA netif to "return to AP mode" — AP is already
+  running.
+- Do not call `esp_wifi_stop()` after a successful connect: that would take
+  the SoftAP down too.
+- Clock: STA GOT_IP starts SNTP (`pool.ntp.org`). Opening the settings page
+  POSTs the browser's `Date.now()` + timezone to `/time` so the RTC is set
+  even on SoftAP-only (no internet). Timezone is stored in NVS `tz_min`
+  (minutes east of UTC). Recorder filenames use `localtime` once the clock
+  is valid (`time() > 2020`). UTC survives `esp_restart()`; TZ is re-applied
+  from NVS in `wifi_config_apply_saved_timezone()`.
 
 ## File-Level Change Guide
 
 ### `src/media.cpp`
 
 Safe to tweak:
-- `MIC_GAIN`
+- Default volume/gain in `wifi_config.h` (`WIFI_CFG_DEFAULT_*`)
 - Opus bitrate/complexity
 - Log cadence
 

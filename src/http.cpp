@@ -7,7 +7,7 @@
 
 #ifndef LINUX_BUILD
 #include "wifi_config.h"
-#include <esp_log.h>
+#include "esp_heap_caps.h"
 #endif
 
 #ifndef MIN
@@ -80,7 +80,7 @@ void oai_http_request(char *offer, char *answer) {
   memset(&config, 0, sizeof(esp_http_client_config_t));
 
   config.url = OPENAI_REALTIMEAPI "/calls";
-  config.timeout_ms = 30000;  // 30 second timeout for slower networks
+  config.timeout_ms = 45000;  // SDP answer can wait on server session preemption
   config.event_handler = oai_http_event_handler;
   config.user_data = answer;
   config.buffer_size = MAX_HTTP_OUTPUT_BUFFER;
@@ -93,7 +93,7 @@ void oai_http_request(char *offer, char *answer) {
   config.crt_bundle_attach = esp_crt_bundle_attach;
 
 #ifndef LINUX_BUILD
-  wifi_config_data_t nvs_config = {0}; 
+  wifi_config_data_t nvs_config{}; 
   read_wifi_config_from_nvs(&nvs_config);
   snprintf(answer, MAX_HTTP_OUTPUT_BUFFER, "Bearer %s", nvs_config.openai_key);
 #else
@@ -107,6 +107,12 @@ void oai_http_request(char *offer, char *answer) {
   esp_http_client_set_header(client, "Authorization", answer);
   esp_http_client_set_post_field(client, offer, strlen(offer));
 
+#ifndef LINUX_BUILD
+  ESP_LOGI(LOG_TAG, "POST %s (free heap int=%u spiram=%u)",
+           config.url,
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+#endif
   esp_err_t err = esp_http_client_perform(client);
   ESP_LOGI(LOG_TAG, "Made it here URL: %s", config.url);
   ESP_LOGI(LOG_TAG, "Answer: %s", answer);
