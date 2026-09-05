@@ -112,8 +112,24 @@ static esp_codec_dev_handle_t s_mic_codec_dev = NULL;
 // room echo dies), replace the uplink with silence. That disables barge-in
 // during playback; press BOOT (GPIO0) to cancel the response instead.
 #define SPEAKER_MIC_MUTE_HOLD_MS 300
+// Ignore decoder dither / comfort-noise so a continuous RTP stream of
+// near-silence does not keep the mic muted forever.
+#define SPEAKER_ENERGY_PEAK_MIN 400
 static volatile TickType_t s_speaker_last_play_tick = 0;
 static bool s_mic_held_for_speaker = false;
+
+static bool oai_pcm_has_energy(const opus_int16 *pcm, int samples) {
+  for (int i = 0; i < samples; ++i) {
+    int v = pcm[i];
+    if (v < 0) {
+      v = -v;
+    }
+    if (v >= SPEAKER_ENERGY_PEAK_MIN) {
+      return true;
+    }
+  }
+  return false;
+}
 
 static bool oai_speaker_holds_mic(void) {
   TickType_t last = s_speaker_last_play_tick;
@@ -435,7 +451,9 @@ void oai_audio_decode(uint8_t *data, size_t size) {
       // the decoded stereo frame goes straight to the codec device.
       esp_codec_dev_write(s_spk_codec_dev, output_buffer,
                           decoded_size * SPK_CHANNELS * sizeof(opus_int16));
-      s_speaker_last_play_tick = xTaskGetTickCount();
+      if (oai_pcm_has_energy(output_buffer, decoded_size * SPK_CHANNELS)) {
+        s_speaker_last_play_tick = xTaskGetTickCount();
+      }
     }
 #elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
     if (s_spk_codec_dev != NULL && output_buffer_mono != NULL) {
@@ -607,22 +625,6 @@ void oai_send_audio(PeerConnection *peer_connection) {
   }
 #endif
 
-#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
-  // Keep draining the ES7210 (the read above) so the shared I2S DMA does not
-  // overflow, but send silence while the speaker is live so TTS is not
-  // transcribed as user speech.
-  if (oai_speaker_holds_mic()) {
-    if (!s_mic_held_for_speaker) {
-      ESP_LOGI("Media", "Mic uplink silenced while speaker plays (no AEC; BOOT cancels playback)");
-      s_mic_held_for_speaker = true;
-    }
-    memset(encoder_input_buffer, 0, samples_read * sizeof(opus_int16));
-  } else if (s_mic_held_for_speaker) {
-    ESP_LOGI("Media", "Mic uplink resumed");
-    s_mic_held_for_speaker = false;
-  }
-#endif
-
   regulator++;
   if (regulator % 100 == 0) {
     ESP_LOGI("Media", "Bytes read: %d, ch=%s, L=%lld R=%lld",
@@ -678,6 +680,23 @@ void oai_send_audio(PeerConnection *peer_connection) {
     }
 #endif
   }
+
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+  // Keep draining the ES7210 (the read above) so the shared I2S DMA does not
+  // overflow, but send silence while the speaker is live so TTS is not
+  // transcribed as user speech. Applied after the diagnostic log so "Mic
+  // samples" still shows the real capture.
+  if (oai_speaker_holds_mic()) {
+    if (!s_mic_held_for_speaker) {
+      ESP_LOGI("Media", "Mic uplink silenced while speaker plays (no AEC; BOOT cancels playback)");
+      s_mic_held_for_speaker = true;
+    }
+    memset(encoder_input_buffer, 0, samples_read * sizeof(opus_int16));
+  } else if (s_mic_held_for_speaker) {
+    ESP_LOGI("Media", "Mic uplink resumed");
+    s_mic_held_for_speaker = false;
+  }
+#endif
 
   auto encoded_size =
       opus_encode(opus_encoder, encoder_input_buffer, samples_read,

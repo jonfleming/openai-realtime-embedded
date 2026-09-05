@@ -107,11 +107,13 @@ L/R PCM and downmix to mono before Opus encode. The 1.8 path stays mono 16
 kHz. `esp_codec_dev` reconfigures the shared I2S slot/clock on open, so the
 BSP's mono 22050 Hz default is harmless.
 
-The 2.06 has no AEC. While `oai_audio_decode()` is writing to the ES8311
-(plus `SPEAKER_MIC_MUTE_HOLD_MS` 300 ms after the last frame),
-`oai_send_audio()` still reads the ES7210 so the shared I2S DMA does not
-overflow, but replaces the Opus uplink with silence. Server VAD / barge-in
-cannot interrupt playback; press BOOT (GPIO0) to pause and `response.cancel`.
+The 2.06 has no AEC. While `oai_audio_decode()` writes PCM with a peak of at
+least `SPEAKER_ENERGY_PEAK_MIN` (plus `SPEAKER_MIC_MUTE_HOLD_MS` 300 ms after
+the last audible frame), `oai_send_audio()` still reads the ES7210 so the
+shared I2S DMA does not overflow, but replaces the Opus uplink with silence.
+Near-silent downlink (comfort noise / empty Opus) must not refresh that
+timer or the mic stays muted forever. Server VAD / barge-in cannot interrupt
+playback; press BOOT (GPIO0) to pause and `response.cancel`.
 
 Display init (`src/lcd.cpp`) replicates `bsp_display_start()` with public BSP
 APIs (touch probe retried, never fatal) and uses this project's proven
