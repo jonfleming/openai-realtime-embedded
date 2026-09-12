@@ -47,6 +47,7 @@
 static i2c_master_bus_handle_t s_i2c = NULL;
 static i2c_master_dev_handle_t s_axp = NULL;
 static bool s_axp_ok = false;
+static bool s_inited = false;
 
 static esp_err_t axp_read_reg(uint8_t reg, uint8_t *val)
 {
@@ -113,6 +114,11 @@ static int axp_read_bat_mv(void)
 
 esp_err_t oai_battery_init(void)
 {
+    if (s_inited) {
+        return s_axp_ok ? ESP_OK : ESP_FAIL;
+    }
+    s_inited = true;
+
     s_i2c = bsp_i2c_get_handle();
     if (s_i2c == NULL) {
         ESP_LOGW(TAG, "No BSP I2C bus handle; battery monitoring disabled");
@@ -202,6 +208,7 @@ static adc_cali_handle_t s_cali = NULL;
 static adc_unit_t s_unit;
 static adc_channel_t s_chan;
 static int s_avg_raw = 0;
+static bool s_inited = false;
 
 static int adc_raw_to_mv_fallback(int raw)
 {
@@ -241,6 +248,11 @@ static int batt_read_mv(int *raw_out)
 
 esp_err_t oai_battery_init(void)
 {
+    if (s_inited) {
+        return s_adc != NULL ? ESP_OK : ESP_FAIL;
+    }
+    s_inited = true;
+
 #if !(defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD)
     // Freenove: release the shared LCD_RST pin (driven HIGH at the end of the
     // reset pulse in init_lvgl()) so the battery divider can bias it. The

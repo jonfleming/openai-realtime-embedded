@@ -15,7 +15,13 @@ extern "C" {
 
 #define WIFI_CFG_SPEAKER_VOL_MIN    0
 #define WIFI_CFG_SPEAKER_VOL_MAX    100
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+// ES8311 init leaves DAC_REG32 at 0xBF (~75%). Volume 100 maps to 0xFF and
+// is far too loud on this speaker; keep the historical codec default.
+#define WIFI_CFG_DEFAULT_SPEAKER_VOL 75
+#else
 #define WIFI_CFG_DEFAULT_SPEAKER_VOL 100
+#endif
 
 #define WIFI_CFG_MIC_GAIN_MIN       1
 #define WIFI_CFG_MIC_GAIN_MAX       16

@@ -15,6 +15,9 @@
 #include "esp_http_server.h"
 #include "wifi_config.h"
 #include "battery.h"
+#if defined(WATCH_OS_SHELL)
+#include "battery_indicator.h"
+#endif
 
 // AIPI-Lite hardware initialization
 #if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
@@ -199,9 +202,11 @@ static void status_display_task(void *pvParameters) {
     }
 }
 
+#ifndef WATCH_OS_SHELL
 // Poll the battery every few seconds and push changes to the bottom-of-screen
 // indicator. Runs as its own task so the LVGL update always happens in task
 // context and the ADC/I2C read never blocks the audio or network tasks.
+// watch-os owns this chrome instead (battery_indicator_start).
 static void battery_display_task(void *pvParameters) {
     vTaskDelay(pdMS_TO_TICKS(500)); // let lvgl_ui() finish building the screen
     int last_pct = -2;
@@ -214,6 +219,7 @@ static void battery_display_task(void *pvParameters) {
         vTaskDelay(pdMS_TO_TICKS(5000));
     }
 }
+#endif
 
 // Stop audio playback (speaker)
 extern void oai_stop_audio_playback(void);
@@ -270,11 +276,18 @@ extern "C" void voice_assistant_run(void) {
   if (lvgl_ret == ESP_OK) {
     lvgl_ui();
     xTaskCreate(status_display_task, "status_display", 4096, NULL, 3, NULL);
+#if defined(WATCH_OS_SHELL)
+    // watch-os owns the on-screen battery chrome across every app. The
+    // hardware monitor still lives in battery.cpp so standalone boards keep
+    // the assistant's own bottom bar.
+    battery_indicator_start();
+#else
     // Battery monitor (after init_lvgl so the Freenove shared LCD_RST pin has
     // finished its reset pulse and can be released to the ADC).
     if (oai_battery_init() == ESP_OK) {
       xTaskCreate(battery_display_task, "battery_display", 4096, NULL, 2, NULL);
     }
+#endif
   } else {
     ESP_LOGE(TAG, "Display/LVGL init failed (%s). Continuing in headless mode.", esp_err_to_name(lvgl_ret));
   }

@@ -20,7 +20,8 @@ void lvgl_ui_label_set_text(const char *text);
 void lvgl_ui_status_set_text(const char *text);
 void lvgl_ui_clear_messages(void);
 // Show the battery indicator at the bottom of the screen. pct is 0..100;
-// pass -1 to hide it (no battery / monitor unavailable).
+// pass -1 to hide it (no battery / monitor unavailable). No-op under
+// watch-os, which draws its own chrome via battery_indicator_start().
 void lvgl_ui_battery_set_percent(int pct);
 // Turn the display backlight fully off (on=false) or back on at the board's
 // configured brightness (on=true). Used to save battery while the device is

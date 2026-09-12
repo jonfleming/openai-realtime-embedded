@@ -123,10 +123,12 @@ static lv_obj_t *status_label = NULL;
 // proportional to the remaining charge, with the percentage text on top.
 // Created lazily by lvgl_ui_battery_set_percent() and hidden while no
 // battery is present. UI_BATTERY_RESERVED below is the room the container
-// leaves for it.
+// leaves for it. watch-os draws its own chrome on lv_layer_top() instead.
+#ifndef WATCH_OS_SHELL
 #define BATTERY_BAR_W_PCT   45
 #define BATTERY_BAR_H       18
 static lv_obj_t *battery_bar = NULL;
+#endif
 
 // UI sizes are board-dependent: the AIPI-Lite has a tiny 128x128 display and
 // no touch input, so it uses small fonts and a tighter layout that fits the
@@ -143,7 +145,11 @@ static lv_obj_t *battery_bar = NULL;
 #define UI_STATUS_FONT       &lv_font_montserrat_32
 #define UI_MESSAGE_FONT      &lv_font_montserrat_20
 #define UI_CONTAINER_PAD_TOP 56
+#if defined(WATCH_OS_SHELL)
+#define UI_BATTERY_RESERVED  0
+#else
 #define UI_BATTERY_RESERVED  36
+#endif
 #define UI_CONTAINER_MARGIN_X 5
 #define UI_CONTAINER_MARGIN_Y 5
 #define UI_BUTTON_PAD        13
@@ -656,8 +662,8 @@ void lvgl_ui(void)
     lvgl_screen.screen = lv_obj_create(lv_scr_act());
     lv_obj_set_size(lvgl_screen.screen, DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
-    // Create container. Height leaves room at the bottom for the battery
-    // bar (UI_BATTERY_RESERVED) so the message labels never run under it.
+    // Create container. Height leaves room at the bottom for the standalone
+    // battery bar (UI_BATTERY_RESERVED, 0 under watch-os).
     lvgl_screen.container = lv_obj_create(lvgl_screen.screen);
     lv_obj_set_size(lvgl_screen.container,
                     DISPLAY_WIDTH - 2 * UI_CONTAINER_MARGIN_X,
@@ -719,6 +725,9 @@ void lvgl_ui_status_set_text(const char *text)
 // so hiding the bar hides both. Must be called from task context.
 void lvgl_ui_battery_set_percent(int pct)
 {
+#if defined(WATCH_OS_SHELL)
+    (void)pct;
+#else
     lcd_disp_lock();
 
     if (lvgl_screen.screen == NULL) {
@@ -758,6 +767,7 @@ void lvgl_ui_battery_set_percent(int pct)
     }
 
     lcd_disp_unlock();
+#endif
 }
 
 // Turn the display backlight fully off or back on. Per-board backend:

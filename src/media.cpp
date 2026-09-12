@@ -112,15 +112,18 @@ static esp_codec_dev_handle_t s_spk_codec_dev = NULL;
 static esp_codec_dev_handle_t s_mic_codec_dev = NULL;
 #endif
 
-#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
-// The 2.06 watch has no acoustic echo cancellation. Speaker output couples
-// into the ES7210 mics and the server VAD treats it as the user talking.
-// While the DAC is playing (plus a hangover after the last frame so body/
-// room echo dies), replace the uplink with silence. That disables barge-in
-// during playback; press BOOT (GPIO0) to cancel the response instead.
+#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
+// Neither Waveshare board has AEC. Speaker output couples into the mic
+// (2.06: ES7210; 1.8: ES8311 ADC on the same codec as the DAC) and the
+// server VAD treats it as the user talking. While the DAC is playing
+// (plus a hangover after the last frame so body/room echo dies), replace
+// the uplink with silence. That disables barge-in during playback; press
+// BOOT (GPIO0) to cancel the response instead.
 #define SPEAKER_MIC_MUTE_HOLD_MS 300
 // Ignore decoder dither / comfort-noise so a continuous RTP stream of
-// near-silence does not keep the mic muted forever.
+// near-silence does not keep the mic muted forever. Measured on the
+// decoded stereo PCM (before the 1.8 SPK_GAIN boost) so both boards
+// share the same threshold.
 #define SPEAKER_ENERGY_PEAK_MIN 400
 static volatile TickType_t s_speaker_last_play_tick = 0;
 static bool s_mic_held_for_speaker = false;
@@ -522,6 +525,9 @@ void oai_audio_decode(uint8_t *data, size_t size) {
       }
       esp_codec_dev_write(s_spk_codec_dev, output_buffer_mono,
                           decoded_size * sizeof(opus_int16));
+      if (oai_pcm_has_energy(output_buffer, decoded_size * SPK_CHANNELS)) {
+        s_speaker_last_play_tick = xTaskGetTickCount();
+      }
     }
 #endif
   }
@@ -738,9 +744,9 @@ void oai_send_audio(PeerConnection *peer_connection) {
 #endif
   }
 
-#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
-  // Keep draining the ES7210 (the read above) so the shared I2S DMA does not
-  // overflow, but send silence while the speaker is live so TTS is not
+#if defined(WAVESHARE_BSP_BOARD) && WAVESHARE_BSP_BOARD
+  // Keep draining the codec ADC (the read above) so the shared I2S DMA does
+  // not overflow, but send silence while the speaker is live so TTS is not
   // transcribed as user speech. Applied after the diagnostic log so "Mic
   // samples" still shows the real capture.
   if (oai_speaker_holds_mic()) {

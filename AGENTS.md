@@ -107,9 +107,10 @@ L/R PCM and downmix to mono before Opus encode. The 1.8 path stays mono 16
 kHz. `esp_codec_dev` reconfigures the shared I2S slot/clock on open, so the
 BSP's mono 22050 Hz default is harmless.
 
-The 2.06 has no AEC. While `oai_audio_decode()` writes PCM with a peak of at
+Neither Waveshare board has AEC (2.06 ES7210 or 1.8 ES8311 ADC on the same
+codec as the DAC). While `oai_audio_decode()` writes PCM with a peak of at
 least `SPEAKER_ENERGY_PEAK_MIN` (plus `SPEAKER_MIC_MUTE_HOLD_MS` 300 ms after
-the last audible frame), `oai_send_audio()` still reads the ES7210 so the
+the last audible frame), `oai_send_audio()` still reads the codec ADC so the
 shared I2S DMA does not overflow, but replaces the Opus uplink with silence.
 Near-silent downlink (comfort noise / empty Opus) must not refresh that
 timer or the mic stays muted forever. Server VAD / barge-in cannot interrupt
@@ -124,11 +125,15 @@ WebRTC/TLS consume the internal heap. `max_transfer_sz` must be nonzero (the
 
 ## Battery Monitoring
 
-Bottom-of-screen battery indicator: `src/battery.cpp` (per-board backend) +
-`lvgl_ui_battery_set_percent()` in `src/lcd.cpp` (horizontal green bar, 45 %
-screen width, bottom-mid, percentage text overlaid) polled every 5 s by
-`battery_display_task` in `main.cpp`. The widget hides when the backend
-returns -1 (no battery / monitor unavailable).
+Bottom-of-screen battery indicator on standalone firmware: `src/battery.cpp`
+(per-board backend) + `lvgl_ui_battery_set_percent()` in `src/lcd.cpp`
+(horizontal green bar, 45 % screen width, bottom-mid, percentage text
+overlaid) polled every 5 s by `battery_display_task` in `main.cpp`. The
+widget hides when the backend returns -1 (no battery / monitor unavailable).
+Under `WATCH_OS_SHELL` the assistant does not draw this bar — watch-os owns
+the chrome (`battery_indicator_start()` on `lv_layer_top()`) so it appears
+on the start menu, recorder, and assistant. The hardware monitor stays here
+so Freenove / AIPI-Lite / standalone Waveshare builds keep the bottom bar.
 
 Per-board backends (compile-time selected in `src/battery.cpp`):
 - **Freenove Media Kit**: GPIO20 is the **shared LCD_RST + battery-divider
