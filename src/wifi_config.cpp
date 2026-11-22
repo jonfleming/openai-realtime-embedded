@@ -847,6 +847,5 @@ void wifi_config_init(void)
     ESP_LOGI(TAG, "WiFi connection successful. SoftAP remains at http://192.168.4.1");
     lvgl_ui_label_set_text("WiFi connection successful.");
     vTaskDelay(pdMS_TO_TICKS(500));
-    lvgl_ui_label_set_text("You can chat now.");
     s_init_complete = true;
 }

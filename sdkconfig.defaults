@@ -55,3 +55,11 @@ CONFIG_LV_FONT_MONTSERRAT_16=y
 
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# A deeper UDP mailbox absorbs a short downlink burst. Do NOT switch Wi-Fi
+# to a large static TX pool to go with this: those buffers are internal DMA
+# RAM (~1.6 KB each). 32 of them left ~18 KB internal free and TLS setup
+# failed (mbedtls -0x7F00, ESP_ERR_HTTP_CONNECT) right after Wi-Fi connected.
+# Playback stutter is handled by the speaker task, not by reserving TX buffers.
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=32
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64

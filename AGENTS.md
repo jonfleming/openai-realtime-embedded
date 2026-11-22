@@ -108,13 +108,27 @@ kHz. `esp_codec_dev` reconfigures the shared I2S slot/clock on open, so the
 BSP's mono 22050 Hz default is harmless.
 
 Neither Waveshare board has AEC (2.06 ES7210 or 1.8 ES8311 ADC on the same
-codec as the DAC). While `oai_audio_decode()` writes PCM with a peak of at
-least `SPEAKER_ENERGY_PEAK_MIN` (plus `SPEAKER_MIC_MUTE_HOLD_MS` 300 ms after
+codec as the DAC). While the speaker playback task writes PCM with a peak of
+at least `SPEAKER_ENERGY_PEAK_MIN` (plus `SPEAKER_MIC_MUTE_HOLD_MS` 3000 ms after
 the last audible frame), `oai_send_audio()` still reads the codec ADC so the
 shared I2S DMA does not overflow, but replaces the Opus uplink with silence.
-Near-silent downlink (comfort noise / empty Opus) must not refresh that
+The hold is 3 s, not an echo tail: chunked TTS goes quiet for 1-2 s between
+words, and a shorter hold reopens the mic so the next uplink packet is real
+audio. The server VAD treats that as the user talking and the reply stalls
+word by word. Near-silent downlink (comfort noise / empty Opus) must not refresh that
 timer or the mic stays muted forever. Server VAD / barge-in cannot interrupt
 playback; press BOOT (GPIO0) to pause and `response.cancel`.
+
+`oai_audio_decode()` runs on the peer-connection loop and must only enqueue
+a frame (`spk_play` does the blocking codec/I2S write). Writing inline stalls
+UDP receive for a full 20 ms frame: the lwIP mailbox overflows, downlink RTP
+is dropped (playback stutters), and `sendto` returns ENOMEM ("Not enough
+space"). `CONFIG_LWIP_UDP_RECVMBOX_SIZE` is 32 so a short burst is not dropped.
+Do not "fix" that by reserving a large static Wi-Fi TX pool
+(`CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP` forces static TX, ~1.6 KB of internal
+DMA RAM each). 32 static TX buffers left ~18 KB internal free and the signaling
+HTTPS call died in `mbedtls_ssl_setup` (`-0x7F00`, `ESP_ERR_HTTP_CONNECT`)
+with the screen stuck on "WiFi connection successful."
 
 Display init (`src/lcd.cpp`) replicates `bsp_display_start()` with public BSP
 APIs (touch probe retried, never fatal) and uses this project's proven
@@ -349,6 +363,7 @@ Treat as high risk:
 - Mic sample rate
 - Shift/unpack logic (`>> 16`)
 - Frame size assumptions around 20 ms packets
+- Playing speaker audio inline from `oai_audio_decode()` (must stay queued on `spk_play`)
 
 If touching high-risk areas, validate with:
 - Audible quality

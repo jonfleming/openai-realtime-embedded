@@ -112,3 +112,22 @@ why it mattered, what symptom it fixed.
 - **Verified:** builds pass for Freenove, AIPI, Waveshare 1.8 and 2.06.
 - **Validate on hardware:** battery % sanity per board; Freenove display
   still renders after GPIO20 floats to the divider voltage.
+
+## Playback stutter + sendto "Not enough space"
+
+- **Symptom:** Waveshare 2.06 stutters during assistant playback. Serial shows
+  `socket.c: Failed to sendto: Not enough space` (lwIP `ENOMEM`) just after
+  "Mic uplink silenced while speaker plays".
+- **Cause:** `oai_audio_decode()` runs on the peer loop and was blocking in
+  `esp_codec_dev_write` for a full 20 ms frame. The loop reads UDP; while it
+  is stuck in the codec write the mailbox (default 6) overflows, downlink RTP
+  is dropped, and the dynamic WiFi TX pool malloc fails so uplink `sendto`
+  returns ENOMEM.
+- **Fix:** decode only enqueues (6 frames). `spk_play` does the blocking
+  write. The peer loop drains every datagram already queued. UDP recv mailbox
+  is 32. Do not move the speaker write back onto the peer loop, and do not
+  reserve a large static Wi-Fi TX pool for this: those buffers are internal
+  DMA RAM, and 32 of them left ~18 KB internal free so TLS setup failed
+  (`mbedtls -0x7F00`) with the screen stuck after "WiFi connection successful."
+- **Validate on hardware:** a spoken reply plays without gaps, and the
+  sendto error does not return during playback.

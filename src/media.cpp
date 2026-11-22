@@ -4,7 +4,9 @@
 #include <opus.h>
 #include <esp_log.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <freertos/task.h>
+#include <esp_heap_caps.h>
 
 #include "main.h"
 #include "wifi_config.h"
@@ -116,10 +118,14 @@ static esp_codec_dev_handle_t s_mic_codec_dev = NULL;
 // Neither Waveshare board has AEC. Speaker output couples into the mic
 // (2.06: ES7210; 1.8: ES8311 ADC on the same codec as the DAC) and the
 // server VAD treats it as the user talking. While the DAC is playing
-// (plus a hangover after the last frame so body/room echo dies), replace
-// the uplink with silence. That disables barge-in during playback; press
-// BOOT (GPIO0) to cancel the response instead.
-#define SPEAKER_MIC_MUTE_HOLD_MS 300
+// (plus a hangover after the last audible frame), replace the uplink
+// with silence. Slow TTS (Qwen3) delivers a word, then nothing for 1-2 s.
+// A 300 ms hangover expired in that gap, the mic reopened, and the next
+// uplink packet was real audio — the server VAD took that as the user
+// talking and the rest of the reply came out one word at a time. The
+// hangover has to cover those gaps. Barge-in stays off; press BOOT
+// (GPIO0) to cancel the response instead.
+#define SPEAKER_MIC_MUTE_HOLD_MS 3000
 // Ignore decoder dither / comfort-noise so a continuous RTP stream of
 // near-silence does not keep the mic muted forever. Measured on the
 // decoded stereo PCM (before the 1.8 SPK_GAIN boost) so both boards
@@ -435,6 +441,8 @@ opus_int32 *output_buffer_32 = NULL;
 opus_int16 *output_buffer_mono = NULL;
 OpusDecoder *opus_decoder = NULL;
 
+static void playback_init(void);
+
 void oai_init_audio_decoder() {
   int decoder_error = 0;
   opus_decoder = opus_decoder_create(SPK_SAMPLE_RATE, SPK_CHANNELS, &decoder_error);
@@ -454,82 +462,221 @@ void oai_init_audio_decoder() {
   output_buffer_mono =
       (opus_int16 *)malloc(SPK_BUFFER_SAMPLES * sizeof(opus_int16));
 #endif
+  playback_init();
+}
+
+// oai_audio_decode() runs on the peer-connection loop. A blocking
+// esp_codec_dev_write / i2s_channel_write there stalls UDP receive for a
+// whole 20 ms frame. The lwIP mailbox (and then the WiFi TX pool) fills,
+// downlink RTP is dropped — playback stutters — and sendto returns
+// ENOMEM ("Not enough space"). Decode only enqueues; this task is the
+// only one that blocks on the speaker.
+#define PLAYBACK_SLOTS 6
+
+static uint8_t *s_play_slots[PLAYBACK_SLOTS];
+static size_t s_play_slot_len[PLAYBACK_SLOTS];
+static QueueHandle_t s_play_ready = NULL;
+static QueueHandle_t s_play_free = NULL;
+static uint8_t *s_play_bounce = NULL;
+static size_t s_play_max_bytes = 0;
+static int s_play_drops = 0;
+
+static size_t playback_frame_capacity(void) {
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+  return SPK_BUFFER_SAMPLES * SPK_CHANNELS * sizeof(opus_int32);
+#else
+  return SPK_BUFFER_SAMPLES * SPK_CHANNELS * sizeof(opus_int16);
+#endif
+}
+
+static void playback_write(const uint8_t *data, size_t bytes) {
+  if (data == NULL || bytes == 0 || oai_is_interrupted()) {
+    return;
+  }
+#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
+  if (s_spk_codec_dev == NULL) {
+    return;
+  }
+  // Stereo passthrough: the ES8311 DAC is opened at 16 kHz stereo.
+  if (oai_pcm_has_energy((const opus_int16 *)data, (int)(bytes / sizeof(opus_int16)))) {
+    s_speaker_last_play_tick = xTaskGetTickCount();
+  }
+  esp_codec_dev_write(s_spk_codec_dev, (void *)data, bytes);
+#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
+  if (s_spk_codec_dev == NULL || output_buffer_mono == NULL) {
+    return;
+  }
+  // Energy is measured on the decoded stereo frame, before SPK_GAIN, so a
+  // near-silent comfort-noise frame does not hold the mic mute.
+  const opus_int16 *stereo = (const opus_int16 *)data;
+  int n = (int)(bytes / sizeof(opus_int16));
+  if (oai_pcm_has_energy(stereo, n)) {
+    s_speaker_last_play_tick = xTaskGetTickCount();
+  }
+  int frames = n / SPK_CHANNELS;
+  for (int i = 0; i < frames; ++i) {
+    int32_t m = (((int32_t)stereo[i * 2] + (int32_t)stereo[i * 2 + 1]) >> 1) * SPK_GAIN;
+    output_buffer_mono[i] = m > 32767 ? 32767 : (m < -32768 ? -32768 : (opus_int16)m);
+  }
+  esp_codec_dev_write(s_spk_codec_dev, output_buffer_mono, frames * sizeof(opus_int16));
+#else
+  if (s_i2s_tx_chan == NULL) {
+    return;
+  }
+  size_t written = 0;
+  i2s_channel_write(s_i2s_tx_chan, data, bytes, &written, portMAX_DELAY);
+#endif
+}
+
+// Copy the frame out of the slot before returning it, then block in the
+// speaker write. The peer loop can refill the slot while the DMA drains.
+static void playback_task(void *arg) {
+  (void)arg;
+  uint8_t idx;
+  while (1) {
+    if (xQueueReceive(s_play_ready, &idx, portMAX_DELAY) != pdTRUE) {
+      continue;
+    }
+    if (idx >= PLAYBACK_SLOTS) {
+      continue;
+    }
+    size_t n = s_play_slot_len[idx];
+    if (n > s_play_max_bytes) {
+      n = s_play_max_bytes;
+    }
+    memcpy(s_play_bounce, s_play_slots[idx], n);
+    xQueueSend(s_play_free, &idx, portMAX_DELAY);
+    playback_write(s_play_bounce, n);
+  }
+}
+
+static bool playback_enqueue(const void *data, size_t bytes) {
+  if (s_play_ready == NULL || data == NULL || bytes == 0 || bytes > s_play_max_bytes) {
+    return false;
+  }
+  uint8_t idx;
+  if (xQueueReceive(s_play_free, &idx, 0) != pdTRUE) {
+    // Full: drop the oldest frame so a burst cannot block the peer loop
+    // or grow latency without bound.
+    if (xQueueReceive(s_play_ready, &idx, 0) != pdTRUE) {
+      return false;
+    }
+    s_play_drops++;
+    if (s_play_drops == 1 || (s_play_drops % 50) == 0) {
+      ESP_LOGW("Media", "Playback queue full, dropped %d frame(s)", s_play_drops);
+    }
+  }
+  memcpy(s_play_slots[idx], data, bytes);
+  s_play_slot_len[idx] = bytes;
+  if (xQueueSend(s_play_ready, &idx, 0) != pdTRUE) {
+    xQueueSend(s_play_free, &idx, 0);
+    return false;
+  }
+  return true;
+}
+
+static void playback_init(void) {
+  s_play_max_bytes = playback_frame_capacity();
+  s_play_bounce = (uint8_t *)heap_caps_malloc(
+      s_play_max_bytes, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+  if (s_play_bounce == NULL) {
+    s_play_bounce = (uint8_t *)heap_caps_malloc(s_play_max_bytes, MALLOC_CAP_INTERNAL);
+  }
+  if (s_play_bounce == NULL) {
+    ESP_LOGE("Media", "Playback bounce buffer alloc failed");
+    return;
+  }
+  for (int i = 0; i < PLAYBACK_SLOTS; ++i) {
+    s_play_slots[i] = (uint8_t *)heap_caps_malloc(s_play_max_bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_play_slots[i] == NULL) {
+      s_play_slots[i] = (uint8_t *)heap_caps_malloc(s_play_max_bytes, MALLOC_CAP_INTERNAL);
+    }
+    if (s_play_slots[i] == NULL) {
+      ESP_LOGE("Media", "Playback slot %d alloc failed", i);
+      return;
+    }
+  }
+  s_play_free = xQueueCreate(PLAYBACK_SLOTS, sizeof(uint8_t));
+  s_play_ready = xQueueCreate(PLAYBACK_SLOTS, sizeof(uint8_t));
+  if (s_play_free == NULL || s_play_ready == NULL) {
+    ESP_LOGE("Media", "Playback queue create failed");
+    s_play_ready = NULL;
+    return;
+  }
+  for (uint8_t i = 0; i < PLAYBACK_SLOTS; ++i) {
+    xQueueSend(s_play_free, &i, 0);
+  }
+  // Above the mic task (priority 7) so a full DMA buffer is refilled
+  // before the next uplink send. The write blocks, so this does not
+  // starve the peer loop.
+  if (xTaskCreate(playback_task, "spk_play", 8192, NULL, 8, NULL) != pdPASS) {
+    ESP_LOGE("Media", "Playback task create failed");
+    s_play_ready = NULL;
+    return;
+  }
+  ESP_LOGI("Media", "Speaker playback queued (%d x %u bytes)", PLAYBACK_SLOTS,
+           (unsigned)s_play_max_bytes);
 }
 
 void oai_audio_decode(uint8_t *data, size_t size) {
   int decoded_size =
       opus_decode(opus_decoder, data, size, output_buffer, SPK_BUFFER_SAMPLES, 0);
 
-  if (decoded_size > 0) {
-    // Drop downlink audio while paused. The interrupt flag gates playback on
-    // boards without a codec mute (Freenove/AIPI); doing it here instead of
-    // disabling the I2S TX channel avoids racing the blocking
-    // i2s_channel_write(..., portMAX_DELAY) below, which rebooted the board
-    // on button press.
-    if (oai_is_interrupted()) {
-      return;
-    }
-    size_t bytes_written = 0;
+  if (decoded_size <= 0) {
+    return;
+  }
+  // Drop downlink audio while paused. The interrupt flag gates playback on
+  // boards without a codec mute (Freenove/AIPI); doing it here instead of
+  // disabling the I2S TX channel avoids racing the blocking
+  // i2s_channel_write(..., portMAX_DELAY), which rebooted the board
+  // on button press. Frames already queued are discarded by playback_write.
+  if (oai_is_interrupted()) {
+    return;
+  }
+
+  const void *play = NULL;
+  size_t play_bytes = 0;
+
 #if !defined(WAVESHARE_BSP_BOARD) || !WAVESHARE_BSP_BOARD
-    // Freenove has no codec volume register. AIPI uses es8311_set_volume
-    // (DAC_REG32); scaling here as well would double-attenuate, so AIPI is
-    // excluded. Digital scale is Freenove-only.
+  // Freenove has no codec volume register. AIPI uses es8311_set_volume
+  // (DAC_REG32); scaling here as well would double-attenuate, so AIPI is
+  // excluded. Digital scale is Freenove-only.
 #if !defined(AIPI_LITE_BOARD) || !AIPI_LITE_BOARD
-    {
-      int vol = s_speaker_vol;
-      if (vol < 100) {
-        for (int i = 0; i < decoded_size * SPK_CHANNELS; ++i) {
-          output_buffer[i] = (opus_int16)(((int32_t)output_buffer[i] * vol) / 100);
-        }
-      }
-    }
-#endif
-#endif
-    if (s_i2s_tx_chan != NULL) {
-#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
-      // Left-align the 16-bit samples in the 32-bit slots (the same wire
-      // format the codec ADC produces and the reference sketch uses).
+  {
+    int vol = s_speaker_vol;
+    if (vol < 100) {
       for (int i = 0; i < decoded_size * SPK_CHANNELS; ++i) {
-        output_buffer_32[i] = ((opus_int32)output_buffer[i]) << 16;
+        output_buffer[i] = (opus_int16)(((int32_t)output_buffer[i] * vol) / 100);
       }
-      i2s_channel_write(s_i2s_tx_chan,
-                        output_buffer_32,
-                        decoded_size * SPK_CHANNELS * sizeof(opus_int32),
-                        &bytes_written,
-                        portMAX_DELAY);
+    }
+  }
+#endif
+  if (s_i2s_tx_chan != NULL) {
+#if defined(AIPI_LITE_BOARD) && AIPI_LITE_BOARD
+    // Left-align the 16-bit samples in the 32-bit slots (the same wire
+    // format the codec ADC produces and the reference sketch uses).
+    for (int i = 0; i < decoded_size * SPK_CHANNELS; ++i) {
+      output_buffer_32[i] = ((opus_int32)output_buffer[i]) << 16;
+    }
+    play = output_buffer_32;
+    play_bytes = decoded_size * SPK_CHANNELS * sizeof(opus_int32);
 #else
-      i2s_channel_write(s_i2s_tx_chan,
-                        output_buffer,
-                        decoded_size * SPK_CHANNELS * sizeof(opus_int16),
-                        &bytes_written,
-                        portMAX_DELAY);
+    play = output_buffer;
+    play_bytes = decoded_size * SPK_CHANNELS * sizeof(opus_int16);
 #endif
-    }
-#if defined(WAVESHARE_AMOLED_2_06_BOARD) && WAVESHARE_AMOLED_2_06_BOARD
-    if (s_spk_codec_dev != NULL) {
-      // Stereo passthrough: the ES8311 DAC is opened at 16 kHz stereo, so
-      // the decoded stereo frame goes straight to the codec device.
-      esp_codec_dev_write(s_spk_codec_dev, output_buffer,
-                          decoded_size * SPK_CHANNELS * sizeof(opus_int16));
-      if (oai_pcm_has_energy(output_buffer, decoded_size * SPK_CHANNELS)) {
-        s_speaker_last_play_tick = xTaskGetTickCount();
-      }
-    }
-#elif defined(WAVESHARE_AMOLED_1_8_BOARD) && WAVESHARE_AMOLED_1_8_BOARD
-    if (s_spk_codec_dev != NULL && output_buffer_mono != NULL) {
-      // Mono speaker path: downmix the decoded stereo frame and push it
-      // through the BSP codec device (opened at 16 kHz mono).
-      for (int i = 0; i < decoded_size; ++i) {
-        int32_t m = (((int32_t)output_buffer[i * 2] + (int32_t)output_buffer[i * 2 + 1]) >> 1) * SPK_GAIN;
-        output_buffer_mono[i] = m > 32767 ? 32767 : (m < -32768 ? -32768 : (opus_int16)m);
-      }
-      esp_codec_dev_write(s_spk_codec_dev, output_buffer_mono,
-                          decoded_size * sizeof(opus_int16));
-      if (oai_pcm_has_energy(output_buffer, decoded_size * SPK_CHANNELS)) {
-        s_speaker_last_play_tick = xTaskGetTickCount();
-      }
-    }
+  }
+#else
+  // Waveshare queues the decoded stereo frame. The 1.8 playback task
+  // downmixes; both boards measure speaker energy at write time.
+  play = output_buffer;
+  play_bytes = decoded_size * SPK_CHANNELS * sizeof(opus_int16);
 #endif
+
+  if (play == NULL || play_bytes == 0) {
+    return;
+  }
+  if (!playback_enqueue(play, play_bytes)) {
+    playback_write(static_cast<const uint8_t *>(play), play_bytes);
   }
 }
 
