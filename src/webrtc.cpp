@@ -44,12 +44,14 @@
   " and **see** through your camera. Always **keep your replies brief**," \
   " limiting them to **one to two sentences**."
 
+// One extra closing brace makes this invalid JSON. The server then drops the
+// whole session.update, so voice, instructions, and VAD never apply.
 #define SESSION_UPDATE \
     R"JSON({"type":"session.update","session":{"type":"realtime","voice":")JSON" \
     VOICE_ID \
     R"JSON(","instructions":")JSON" \
     SYSTEM_PROMPT \
-    R"JSON(","audio":{"input":{"turn_detection":{"type":"server_vad","threshold":0.3,"interrupt_response":true}}}}}})JSON"
+    R"JSON(","audio":{"input":{"turn_detection":{"type":"server_vad","threshold":0.3,"interrupt_response":true}}}}})JSON"
 
 PeerConnection *peer_connection = NULL;
 static volatile bool s_voice_ready = false;
